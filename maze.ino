@@ -33,10 +33,12 @@
 
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
-#include <AsyncWebSocket.h>
 #include <Wire.h>
 #include <VL53L0X.h>
 #include <Preferences.h>
+#if __has_include(<esp_arduino_version.h>)
+#include <esp_arduino_version.h>
+#endif
 
 // ============= CONFIGURATION =============
 
@@ -77,6 +79,14 @@ const char* password = "123tinkerspace";
 #define TOF_TURN_THRESHOLD_MM 150
 #define TOF_COLLISION_THRESHOLD_MM 80
 
+// ESP32 PWM setup for DRV8833 motor inputs
+#define MOTOR_PWM_FREQ 20000
+#define MOTOR_PWM_RESOLUTION 8
+#define LEFT_FWD_CH 0
+#define LEFT_REV_CH 1
+#define RIGHT_FWD_CH 2
+#define RIGHT_REV_CH 3
+
 // ============= GLOBAL STATE =============
 
 // PID tuning parameters (volatile for live updates)
@@ -105,6 +115,9 @@ volatile uint32_t loop_count = 0;
 
 // ToF sensor objects
 VL53L0X tof_left, tof_center, tof_right;
+bool tof_left_ok = false;
+bool tof_center_ok = false;
+bool tof_right_ok = false;
 
 // Web server and WebSocket
 AsyncWebServer server(80);
@@ -112,6 +125,33 @@ AsyncWebSocket ws("/ws");
 
 // Preferences
 Preferences prefs;
+
+// ============= MOTOR PWM COMPATIBILITY =============
+
+void attach_pwm_pin(uint8_t pin, uint8_t channel) {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttach(pin, MOTOR_PWM_FREQ, MOTOR_PWM_RESOLUTION);
+#else
+  ledcSetup(channel, MOTOR_PWM_FREQ, MOTOR_PWM_RESOLUTION);
+  ledcAttachPin(pin, channel);
+#endif
+}
+
+void write_pwm_pin(uint8_t pin, uint8_t channel, int duty) {
+  duty = constrain(duty, 0, 255);
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite(pin, duty);
+#else
+  ledcWrite(channel, duty);
+#endif
+}
+
+void write_motor_outputs(int left_fwd, int left_rev, int right_fwd, int right_rev) {
+  write_pwm_pin(LEFT_MOTOR_FWD, LEFT_FWD_CH, left_fwd);
+  write_pwm_pin(LEFT_MOTOR_REV, LEFT_REV_CH, left_rev);
+  write_pwm_pin(RIGHT_MOTOR_FWD, RIGHT_FWD_CH, right_fwd);
+  write_pwm_pin(RIGHT_MOTOR_REV, RIGHT_REV_CH, right_rev);
+}
 
 // ============= SENSOR INITIALIZATION =============
 
@@ -142,6 +182,7 @@ void init_tof_sensors() {
   if (!tof_left.init()) {
     Serial.println("FAIL");
   } else {
+    tof_left_ok = true;
     tof_left.setAddress(TOF_LEFT_ADDR);
     tof_left.startContinuous();
     Serial.println("OK (0x50)");
@@ -154,6 +195,7 @@ void init_tof_sensors() {
   if (!tof_center.init()) {
     Serial.println("FAIL");
   } else {
+    tof_center_ok = true;
     tof_center.setAddress(TOF_CENTER_ADDR);
     tof_center.startContinuous();
     Serial.println("OK (0x51)");
@@ -166,6 +208,7 @@ void init_tof_sensors() {
   if (!tof_right.init()) {
     Serial.println("FAIL");
   } else {
+    tof_right_ok = true;
     tof_right.setAddress(TOF_RIGHT_ADDR);
     tof_right.startContinuous();
     Serial.println("OK (0x52)");
@@ -183,11 +226,13 @@ void init_motors() {
   pinMode(LEFT_MOTOR_REV, OUTPUT);
   pinMode(RIGHT_MOTOR_FWD, OUTPUT);
   pinMode(RIGHT_MOTOR_REV, OUTPUT);
-  
-  digitalWrite(LEFT_MOTOR_FWD, LOW);
-  digitalWrite(LEFT_MOTOR_REV, LOW);
-  digitalWrite(RIGHT_MOTOR_FWD, LOW);
-  digitalWrite(RIGHT_MOTOR_REV, LOW);
+
+  attach_pwm_pin(LEFT_MOTOR_FWD, LEFT_FWD_CH);
+  attach_pwm_pin(LEFT_MOTOR_REV, LEFT_REV_CH);
+  attach_pwm_pin(RIGHT_MOTOR_FWD, RIGHT_FWD_CH);
+  attach_pwm_pin(RIGHT_MOTOR_REV, RIGHT_REV_CH);
+
+  write_motor_outputs(0, 0, 0, 0);
   
   Serial.println("[Motors] Initialized and stopped");
 }
@@ -206,13 +251,17 @@ float read_ir_distance_cm(uint8_t pin) {
 }
 
 void read_tof_sensors() {
-  tof_left_mm = tof_left.readRangeContinuousMillimeters();
-  tof_center_mm = tof_center.readRangeContinuousMillimeters();
-  tof_right_mm = tof_right.readRangeContinuousMillimeters();
+  int16_t left = tof_left_ok ? tof_left.readRangeContinuousMillimeters() : 1000;
+  int16_t center = tof_center_ok ? tof_center.readRangeContinuousMillimeters() : 1000;
+  int16_t right = tof_right_ok ? tof_right.readRangeContinuousMillimeters() : 1000;
   
-  if (tof_left_mm > 1000) tof_left_mm = 1000;
-  if (tof_center_mm > 1000) tof_center_mm = 1000;
-  if (tof_right_mm > 1000) tof_right_mm = 1000;
+  if (tof_left_ok && tof_left.timeoutOccurred()) left = 1000;
+  if (tof_center_ok && tof_center.timeoutOccurred()) center = 1000;
+  if (tof_right_ok && tof_right.timeoutOccurred()) right = 1000;
+
+  tof_left_mm = constrain(left, 0, 1000);
+  tof_center_mm = constrain(center, 0, 1000);
+  tof_right_mm = constrain(right, 0, 1000);
 }
 
 void read_ir_sensors() {
@@ -225,22 +274,15 @@ void read_ir_sensors() {
 void set_motor_speed(int left_speed, int right_speed) {
   // left_speed, right_speed: -255 to +255
   // Positive = forward, negative = backward
+  left_speed = constrain(left_speed, -255, 255);
+  right_speed = constrain(right_speed, -255, 255);
   
-  if (left_speed > 0) {
-    digitalWrite(LEFT_MOTOR_REV, LOW);
-    analogWrite(LEFT_MOTOR_FWD, constrain(left_speed, 0, 255));
-  } else {
-    digitalWrite(LEFT_MOTOR_FWD, LOW);
-    analogWrite(LEFT_MOTOR_REV, constrain(-left_speed, 0, 255));
-  }
-  
-  if (right_speed > 0) {
-    digitalWrite(RIGHT_MOTOR_REV, LOW);
-    analogWrite(RIGHT_MOTOR_FWD, constrain(right_speed, 0, 255));
-  } else {
-    digitalWrite(RIGHT_MOTOR_FWD, LOW);
-    analogWrite(RIGHT_MOTOR_REV, constrain(-right_speed, 0, 255));
-  }
+  int left_fwd = left_speed > 0 ? left_speed : 0;
+  int left_rev = left_speed < 0 ? -left_speed : 0;
+  int right_fwd = right_speed > 0 ? right_speed : 0;
+  int right_rev = right_speed < 0 ? -right_speed : 0;
+
+  write_motor_outputs(left_fwd, left_rev, right_fwd, right_rev);
 }
 
 // ============= PID CONTROL LOOP (Core 0) =============
@@ -319,6 +361,31 @@ void core0_control_loop(void* param) {
 
 // ============= WiFi & WEB SERVER (Core 1) =============
 
+bool extract_json_float(const String& message, const char* key, float& value) {
+  String pattern = "\"" + String(key) + "\"";
+  int key_pos = message.indexOf(pattern);
+  if (key_pos < 0) return false;
+
+  int colon_pos = message.indexOf(':', key_pos + pattern.length());
+  if (colon_pos < 0) return false;
+
+  int start = colon_pos + 1;
+  while (start < (int)message.length() && isspace((unsigned char)message[start])) {
+    start++;
+  }
+
+  int end = start;
+  while (end < (int)message.length()) {
+    char c = message[end];
+    if (!(isDigit(c) || c == '-' || c == '+' || c == '.')) break;
+    end++;
+  }
+
+  if (end == start) return false;
+  value = message.substring(start, end).toFloat();
+  return true;
+}
+
 void onWebSocketEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
                       AwsEventType type, void* arg, uint8_t* data, size_t len) {
   if (type == WS_EVT_CONNECT) {
@@ -329,33 +396,41 @@ void onWebSocketEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
     AwsFrameInfo* info = (AwsFrameInfo*)arg;
     if (info->final && info->index == 0 && info->len == len) {
       if (info->opcode == WS_TEXT) {
-        String message = String((char*)data).substring(0, len);
-        
-        // Parse JSON: {"kp":0.5,"ki":0.01,"kd":2.0,"speed":150}
-        if (message.indexOf("kp") > 0) {
-          int pos = message.indexOf("kp") + 4;
-          Kp = message.substring(pos, message.indexOf(",", pos)).toFloat();
-        }
-        if (message.indexOf("ki") > 0) {
-          int pos = message.indexOf("ki") + 4;
-          Ki = message.substring(pos, message.indexOf(",", pos)).toFloat();
-        }
-        if (message.indexOf("kd") > 0) {
-          int pos = message.indexOf("kd") + 4;
-          Kd = message.substring(pos, message.indexOf(",", pos)).toFloat();
-        }
-        if (message.indexOf("speed") > 0) {
-          int pos = message.indexOf("speed") + 7;
-          base_speed = message.substring(pos, message.indexOf("}", pos)).toFloat();
+        String message;
+        message.reserve(len + 1);
+        for (size_t i = 0; i < len; i++) {
+          message += (char)data[i];
         }
         
-        // Save to flash
-        prefs.putFloat("kp", Kp);
-        prefs.putFloat("ki", Ki);
-        prefs.putFloat("kd", Kd);
-        prefs.putFloat("speed", base_speed);
-        
-        Serial.printf("[PID] Updated: Kp=%.2f Ki=%.2f Kd=%.2f Speed=%.0f\n", Kp, Ki, Kd, base_speed);
+        // Parse small JSON messages such as {"kp":0.5} or {"speed":150}
+        float parsed_value = 0.0;
+        bool updated = false;
+        if (extract_json_float(message, "kp", parsed_value)) {
+          Kp = constrain(parsed_value, 0.0, 5.0);
+          updated = true;
+        }
+        if (extract_json_float(message, "ki", parsed_value)) {
+          Ki = constrain(parsed_value, 0.0, 1.0);
+          updated = true;
+        }
+        if (extract_json_float(message, "kd", parsed_value)) {
+          Kd = constrain(parsed_value, 0.0, 10.0);
+          updated = true;
+        }
+        if (extract_json_float(message, "speed", parsed_value)) {
+          base_speed = constrain(parsed_value, 0.0, 255.0);
+          updated = true;
+        }
+
+        if (updated) {
+          // Save to flash
+          prefs.putFloat("kp", Kp);
+          prefs.putFloat("ki", Ki);
+          prefs.putFloat("kd", Kd);
+          prefs.putFloat("speed", base_speed);
+          
+          Serial.printf("[PID] Updated: Kp=%.2f Ki=%.2f Kd=%.2f Speed=%.0f\n", Kp, Ki, Kd, base_speed);
+        }
       }
     }
   }
@@ -603,7 +678,9 @@ String get_html_dashboard() {
         
         const msg = {};
         msg[id] = value;
-        ws.send(JSON.stringify(msg));
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(msg));
+        }
       });
     });
     
@@ -661,11 +738,11 @@ void core1_web_server(void* param) {
   ws.onEvent(onWebSocketEvent);
   server.addHandler(&ws);
   
-  server.on("/", HTTP_GET, [](AsyncServerRequest* request) {
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
     request->send(200, "text/html", get_html_dashboard());
   });
   
-  server.on("/telemetry", HTTP_GET, [](AsyncServerRequest* request) {
+  server.on("/telemetry", HTTP_GET, [](AsyncWebServerRequest* request) {
     String json = "{\"error\":" + String(telemetry_error, 2) +
                   ",\"pid_out\":" + String(telemetry_pid_output, 1) +
                   ",\"left_pwm\":" + String((int)telemetry_left_pwm) +
