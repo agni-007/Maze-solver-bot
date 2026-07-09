@@ -1,37 +1,18 @@
-C:\Users\HP\Documents\Arduino\maze\maze.ino: In function 'void core0_control_loop(void*)':
-C:\Users\HP\Documents\Arduino\maze\maze.ino:341:43: error: no matching function for call to 'min(volatile float&, float)'
-  341 |     float active_speed = search_mode ? min(base_speed, (float)SEARCH_SPEED) : base_speed;
-      |                                        ~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-In file included from C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/algorithm:61,
-                 from C:\Users\HP\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.3.0\cores\esp32/Arduino.h:190,
-                 from C:\Users\HP\AppData\Local\arduino\sketches\F0AEBBAFB5D04C8401F37B435D859B93\sketch\maze.ino.cpp:1:
-C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algo.h:5695:5: note: candidate: 'template<class _Tp, class _Compare> constexpr _Tp std::min(initializer_list<_Tp>, _Compare)'
- 5695 |     min(initializer_list<_Tp> __l, _Compare __comp)
-      |     ^~~
-C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algo.h:5695:5: note:   template argument deduction/substitution failed:
-C:\Users\HP\Documents\Arduino\maze\maze.ino:341:43: note:   mismatched types 'std::initializer_list<_Tp>' and 'float'
-  341 |     float active_speed = search_mode ? min(base_speed, (float)SEARCH_SPEED) : base_speed;
-      |                                        ~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algo.h:5685:5: note: candidate: 'template<class _Tp> constexpr _Tp std::min(initializer_list<_Tp>)'
- 5685 |     min(initializer_list<_Tp> __l)
-      |     ^~~
-C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algo.h:5685:5: note:   candidate expects 1 argument, 2 provided
-In file included from C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/specfun.h:43,
-                 from C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/cmath:3898,
-                 from C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/math.h:36,
-                 from C:\Users\HP\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.3.0\cores\esp32/esp32-hal.h:30,
-                 from C:\Users\HP\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.3.0\cores\esp32/Arduino.h:44:
-C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algobase.h:281:5: note: candidate: 'template<class _Tp, class _Compare> constexpr const _Tp& std::min(const _Tp&, const _Tp&, _Compare)'
-  281 |     min(const _Tp& __a, const _Tp& __b, _Compare __comp)
-      |     ^~~
-C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algobase.h:281:5: note:   candidate expects 3 arguments, 2 provided
-C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algobase.h:233:5: note: candidate: 'template<class _Tp> constexpr const _Tp& std::min(const _Tp&, const _Tp&)'
-  233 |     min(const _Tp& __a, const _Tp& __b)
-      |     ^~~
-C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algobase.h:233:5: note:   template argument deduction/substitution failed:
-C:\Users\HP\Documents\Arduino\maze\maze.ino:341:43: note:   deduced conflicting types for parameter 'const _Tp' ('volatile float' and 'float')
-  341 |     float active_speed = search_mode ? min(base_speed, (float)SEARCH_SPEED) : base_speed;
-      |                                        ~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-exit status 1
+Maze will be having physical walls
+Maze size - 8ft*8ft
+Track width is 23cm.
+Wall height will be maximum 10cm.
+Each team will get 3 runs, best of 3 will be taken for ranking.
+A total of 12 mins will be allotted for each team, where each attempt spanning 4 mins.
+Unlike conventional maze solvers , this competition will have only a single path from start to end , there will be no dead ends , decision based junctions etc, your bot must travel through the entire maze track in the shortest time possible without hitting or touching the walls.
+Track will be divided into 8 sections and there will be equal points for each section.
+If your bot hits a wall then points till the preceding section will be awarded.
+Speed will be the sole criteria of winning, ranking will be based on section points awarded and for same section points fastest bot will be placed higher in ranking.
+Bot must start at the designated starting point which will be the top left corner and finish at the finishing point which will be the bottom right corner.
+No human contact with bot once run begins — immediate disqualification 
+Once the competition run begins, the bot must operate fully autonomously without any human intervention. Remote or wireless control of any kind is strictly prohibited. 
+Teams may have the option of taking 10 mins of reprogramming time in between with penalty points applicable.
 
-Compilation error: no matching function for call to 'min(volatile float&, float)'
+All participating teams must have individual bots; no sharing of bots will be allowed.
+All scoring and penalty criteria will be shared 2 weeks before the competition.
+The decision of the organising committee shall be final and binding in all matters.
