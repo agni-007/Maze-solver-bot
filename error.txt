@@ -1,0 +1,65 @@
+C:\Users\HP\Documents\Arduino\maze\maze.ino: In function 'void core1_web_server(void*)':
+C:\Users\HP\Documents\Arduino\maze\maze.ino:664:31: error: 'AsyncServerRequest' has not been declared
+  664 |   server.on("/", HTTP_GET, [](AsyncServerRequest* request) {
+      |                               ^~~~~~~~~~~~~~~~~~
+C:\Users\HP\Documents\Arduino\maze\maze.ino: In lambda function:
+C:\Users\HP\Documents\Arduino\maze\maze.ino:665:14: error: request for member 'send' in '* request', which is of non-class type 'int'
+  665 |     request->send(200, "text/html", get_html_dashboard());
+      |              ^~~~
+C:\Users\HP\Documents\Arduino\maze\maze.ino: In function 'void core1_web_server(void*)':
+C:\Users\HP\Documents\Arduino\maze\maze.ino:664:12: error: no matching function for call to 'AsyncWebServer::on(const char [2], AsyncWebRequestMethod::AsyncWebRequestMethodType, core1_web_server(void*)::<lambda(int*)>)'
+  664 |   server.on("/", HTTP_GET, [](AsyncServerRequest* request) {
+      |   ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  665 |     request->send(200, "text/html", get_html_dashboard());
+      |     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  666 |   });
+      |   ~~        
+In file included from C:\Users\HP\Documents\Arduino\maze\maze.ino:35:
+c:\Users\HP\Documents\Arduino\libraries\ESP_Async_WebServer\src/ESPAsyncWebServer.h:1744:28: note: candidate: 'AsyncCallbackWebHandler& AsyncWebServer::on(AsyncURIMatcher, ArRequestHandlerFunction)'
+ 1744 |   AsyncCallbackWebHandler &on(AsyncURIMatcher uri, ArRequestHandlerFunction onRequest) {
+      |                            ^~
+c:\Users\HP\Documents\Arduino\libraries\ESP_Async_WebServer\src/ESPAsyncWebServer.h:1744:28: note:   candidate expects 2 arguments, 3 provided
+c:\Users\HP\Documents\Arduino\libraries\ESP_Async_WebServer\src/ESPAsyncWebServer.h:1747:28: note: candidate: 'AsyncCallbackWebHandler& AsyncWebServer::on(AsyncURIMatcher, WebRequestMethodComposite, ArRequestHandlerFunction, ArUploadHandlerFunction, ArBodyHandlerFunction)'
+ 1747 |   AsyncCallbackWebHandler &on(
+      |                            ^~
+c:\Users\HP\Documents\Arduino\libraries\ESP_Async_WebServer\src/ESPAsyncWebServer.h:1748:85: note:   no known conversion for argument 3 from 'core1_web_server(void*)::<lambda(int*)>' to 'ArRequestHandlerFunction' {aka 'std::function<void(AsyncWebServerRequest*)>'}
+ 1748 |     AsyncURIMatcher uri, WebRequestMethodComposite method, ArRequestHandlerFunction onRequest, ArUploadHandlerFunction onUpload = nullptr,
+      |                                                            ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~
+C:\Users\HP\Documents\Arduino\maze\maze.ino:668:40: error: 'AsyncServerRequest' has not been declared
+  668 |   server.on("/telemetry", HTTP_GET, [](AsyncServerRequest* request) {
+      |                                        ^~~~~~~~~~~~~~~~~~
+C:\Users\HP\Documents\Arduino\maze\maze.ino: In lambda function:
+C:\Users\HP\Documents\Arduino\maze\maze.ino:674:14: error: request for member 'send' in '* request', which is of non-class type 'int'
+  674 |     request->send(200, "application/json", json);
+      |              ^~~~
+C:\Users\HP\Documents\Arduino\maze\maze.ino: In function 'void core1_web_server(void*)':
+C:\Users\HP\Documents\Arduino\maze\maze.ino:668:12: error: no matching function for call to 'AsyncWebServer::on(const char [11], AsyncWebRequestMethod::AsyncWebRequestMethodType, core1_web_server(void*)::<lambda(int*)>)'
+  668 |   server.on("/telemetry", HTTP_GET, [](AsyncServerRequest* request) {
+      |   ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  669 |     String json = "{\"error\":" + String(telemetry_error, 2) +
+      |     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  670 |                   ",\"pid_out\":" + String(telemetry_pid_output, 1) +
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  671 |                   ",\"left_pwm\":" + String((int)telemetry_left_pwm) +
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  672 |                   ",\"right_pwm\":" + String((int)telemetry_right_pwm) +
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  673 |                   ",\"loop_count\":" + String(loop_count) + "}";
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  674 |     request->send(200, "application/json", json);
+      |     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  675 |   });
+      |   ~~        
+c:\Users\HP\Documents\Arduino\libraries\ESP_Async_WebServer\src/ESPAsyncWebServer.h:1744:28: note: candidate: 'AsyncCallbackWebHandler& AsyncWebServer::on(AsyncURIMatcher, ArRequestHandlerFunction)'
+ 1744 |   AsyncCallbackWebHandler &on(AsyncURIMatcher uri, ArRequestHandlerFunction onRequest) {
+      |                            ^~
+c:\Users\HP\Documents\Arduino\libraries\ESP_Async_WebServer\src/ESPAsyncWebServer.h:1744:28: note:   candidate expects 2 arguments, 3 provided
+c:\Users\HP\Documents\Arduino\libraries\ESP_Async_WebServer\src/ESPAsyncWebServer.h:1747:28: note: candidate: 'AsyncCallbackWebHandler& AsyncWebServer::on(AsyncURIMatcher, WebRequestMethodComposite, ArRequestHandlerFunction, ArUploadHandlerFunction, ArBodyHandlerFunction)'
+ 1747 |   AsyncCallbackWebHandler &on(
+      |                            ^~
+c:\Users\HP\Documents\Arduino\libraries\ESP_Async_WebServer\src/ESPAsyncWebServer.h:1748:85: note:   no known conversion for argument 3 from 'core1_web_server(void*)::<lambda(int*)>' to 'ArRequestHandlerFunction' {aka 'std::function<void(AsyncWebServerRequest*)>'}
+ 1748 |     AsyncURIMatcher uri, WebRequestMethodComposite method, ArRequestHandlerFunction onRequest, ArUploadHandlerFunction onUpload = nullptr,
+      |                                                            ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~
+exit status 1
+
+Compilation error: 'AsyncServerRequest' has not been declared
