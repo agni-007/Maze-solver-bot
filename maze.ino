@@ -338,7 +338,11 @@ void core0_control_loop(void* param) {
     
     float steering = constrain(pid_output, -100, 100);
     
-    float active_speed = search_mode ? min(base_speed, (float)SEARCH_SPEED) : base_speed;
+    float current_base_speed = base_speed;
+    float active_speed = current_base_speed;
+    if (search_mode && active_speed > SEARCH_SPEED) {
+      active_speed = SEARCH_SPEED;
+    }
     float left_base = active_speed * speed_reduction;
     float right_base = active_speed * speed_reduction;
     
