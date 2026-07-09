@@ -63,11 +63,11 @@ const char* password = "123tinkerspace";
 #define CONTROL_LOOP_MS (1000 / CONTROL_LOOP_HZ)
 
 // ToF thresholds (mm)
-#define TOF_TURN_THRESHOLD_MM 150
-#define TOF_COLLISION_THRESHOLD_MM 150
-#define TOF_SIDE_MAX_MM 1000
+#define DEFAULT_TOF_TURN_THRESHOLD_MM 150
+#define DEFAULT_TOF_COLLISION_THRESHOLD_MM 150
+#define DEFAULT_TOF_SIDE_MAX_MM 1000
 #define TOF_INVALID_READING_MM 8190
-#define SEARCH_SPEED 90
+#define DEFAULT_SEARCH_SPEED 90
 
 // ESP32 PWM setup for DRV8833 motor inputs
 #define MOTOR_PWM_FREQ 20000
@@ -84,6 +84,10 @@ volatile float Kp = 0.5;
 volatile float Ki = 0.01;
 volatile float Kd = 2.0;
 volatile float base_speed = 150;
+volatile float search_speed = DEFAULT_SEARCH_SPEED;
+volatile float turn_threshold_mm = DEFAULT_TOF_TURN_THRESHOLD_MM;
+volatile float collision_threshold_mm = DEFAULT_TOF_COLLISION_THRESHOLD_MM;
+volatile float side_max_mm = DEFAULT_TOF_SIDE_MAX_MM;
 
 // Control state
 float pid_integral = 0.0;
@@ -239,10 +243,14 @@ void read_tof_sensors() {
   bool left_fault = !tof_left_ok || left_timeout || left <= 0;
   bool center_fault = !tof_center_ok || center_timeout || center <= 0;
   bool right_fault = !tof_right_ok || right_timeout || right <= 0;
+  float current_side_max = side_max_mm;
 
   bool left_valid = !left_fault && left < TOF_INVALID_READING_MM;
   bool center_valid = !center_fault && center < TOF_INVALID_READING_MM;
   bool right_valid = !right_fault && right < TOF_INVALID_READING_MM;
+  left_valid = left_valid && left <= current_side_max;
+  center_valid = center_valid && center <= current_side_max;
+  right_valid = right_valid && right <= current_side_max;
 
   tof_left_valid = left_valid;
   tof_center_valid = center_valid;
@@ -298,10 +306,13 @@ void core0_control_loop(void* param) {
     // ===== TURN DETECTION (front ToF) =====
     int turn_signal = 0;
     float speed_reduction = 1.0;
+    float turn_threshold = turn_threshold_mm;
+    float collision_threshold = collision_threshold_mm;
+    int side_max = (int)side_max_mm;
     
-    if (tof_center_valid && tof_center_mm < TOF_TURN_THRESHOLD_MM) {
-      int left_compare = tof_left_valid ? tof_left_mm : TOF_SIDE_MAX_MM;
-      int right_compare = tof_right_valid ? tof_right_mm : TOF_SIDE_MAX_MM;
+    if (tof_center_valid && tof_center_mm < turn_threshold) {
+      int left_compare = tof_left_valid ? tof_left_mm : side_max;
+      int right_compare = tof_right_valid ? tof_right_mm : side_max;
       if (right_compare > left_compare + 20) {
         turn_signal = 1;
         speed_reduction = 0.6;
@@ -311,7 +322,7 @@ void core0_control_loop(void* param) {
       }
     }
     
-    if (tof_center_valid && tof_center_mm < TOF_COLLISION_THRESHOLD_MM) {
+    if (tof_center_valid && tof_center_mm < collision_threshold) {
       set_motor_speed(0, 0);
       telemetry_error = 0;
       telemetry_pid_output = 0;
@@ -339,9 +350,10 @@ void core0_control_loop(void* param) {
     float steering = constrain(pid_output, -100, 100);
     
     float current_base_speed = base_speed;
+    float current_search_speed = search_speed;
     float active_speed = current_base_speed;
-    if (search_mode && active_speed > SEARCH_SPEED) {
-      active_speed = SEARCH_SPEED;
+    if (search_mode && active_speed > current_search_speed) {
+      active_speed = current_search_speed;
     }
     float left_base = active_speed * speed_reduction;
     float right_base = active_speed * speed_reduction;
@@ -428,6 +440,22 @@ void onWebSocketEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
           base_speed = constrain(parsed_value, 0.0, 255.0);
           updated = true;
         }
+        if (extract_json_float(message, "search", parsed_value)) {
+          search_speed = constrain(parsed_value, 0.0, 255.0);
+          updated = true;
+        }
+        if (extract_json_float(message, "turn", parsed_value)) {
+          turn_threshold_mm = constrain(parsed_value, 30.0, 600.0);
+          updated = true;
+        }
+        if (extract_json_float(message, "collision", parsed_value)) {
+          collision_threshold_mm = constrain(parsed_value, 30.0, 600.0);
+          updated = true;
+        }
+        if (extract_json_float(message, "side_max", parsed_value)) {
+          side_max_mm = constrain(parsed_value, 100.0, 2000.0);
+          updated = true;
+        }
 
         if (updated) {
           // Save to flash
@@ -435,8 +463,13 @@ void onWebSocketEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
           prefs.putFloat("ki", Ki);
           prefs.putFloat("kd", Kd);
           prefs.putFloat("speed", base_speed);
+          prefs.putFloat("search", search_speed);
+          prefs.putFloat("turn", turn_threshold_mm);
+          prefs.putFloat("collide", collision_threshold_mm);
+          prefs.putFloat("side_max", side_max_mm);
           
-          Serial.printf("[PID] Updated: Kp=%.2f Ki=%.2f Kd=%.2f Speed=%.0f\n", Kp, Ki, Kd, base_speed);
+          Serial.printf("[TUNE] Kp=%.2f Ki=%.2f Kd=%.2f Speed=%.0f Search=%.0f Turn=%.0f Collision=%.0f SideMax=%.0f\n",
+                        Kp, Ki, Kd, base_speed, search_speed, turn_threshold_mm, collision_threshold_mm, side_max_mm);
         }
       }
     }
@@ -612,6 +645,30 @@ String get_html_dashboard() {
           <input type="range" id="speed" min="0" max="255" step="5" value="150">
           <span class="value-display" id="speed-val">150</span>
         </div>
+
+        <div class="control-group">
+          <label>Search Speed (0-255)</label>
+          <input type="range" id="search" min="0" max="255" step="5" value="90">
+          <span class="value-display" id="search-val">90</span>
+        </div>
+
+        <div class="control-group">
+          <label>Turn Threshold (mm)</label>
+          <input type="range" id="turn" min="30" max="600" step="5" value="150">
+          <span class="value-display" id="turn-val">150</span>
+        </div>
+
+        <div class="control-group">
+          <label>Collision Threshold (mm)</label>
+          <input type="range" id="collision" min="30" max="600" step="5" value="150">
+          <span class="value-display" id="collision-val">150</span>
+        </div>
+
+        <div class="control-group">
+          <label>Out-of-Range Limit (mm)</label>
+          <input type="range" id="side_max" min="100" max="2000" step="25" value="1000">
+          <span class="value-display" id="side_max-val">1000</span>
+        </div>
         
         <div id="status" class="status disconnected">⚠️ Disconnected</div>
       </div>
@@ -689,6 +746,15 @@ String get_html_dashboard() {
         if (data.pid_out !== undefined) document.getElementById('pid-out').textContent = data.pid_out.toFixed(1);
         if (data.left_pwm !== undefined) document.getElementById('left-pwm').textContent = data.left_pwm.toFixed(0);
         if (data.right_pwm !== undefined) document.getElementById('right-pwm').textContent = data.right_pwm.toFixed(0);
+        ['kp', 'ki', 'kd', 'speed', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
+          if (data[id] !== undefined) {
+            const slider = document.getElementById(id);
+            const display = document.getElementById(id + '-val');
+            const value = Number(data[id]);
+            if (slider && document.activeElement !== slider) slider.value = value;
+            if (display) display.textContent = value.toFixed((id === 'kp' || id === 'ki' || id === 'kd') ? 2 : 0);
+          }
+        });
         
         if (chartData.labels.length > 50) {
           chartData.labels.shift();
@@ -700,13 +766,14 @@ String get_html_dashboard() {
       } catch (e) {}
     };
     
-    ['kp', 'ki', 'kd', 'speed'].forEach(id => {
+    ['kp', 'ki', 'kd', 'speed', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
       const slider = document.getElementById(id);
       const display = document.getElementById(id + '-val');
       
       slider.addEventListener('input', (e) => {
         const value = parseFloat(e.target.value);
-        display.textContent = value.toFixed(id === 'speed' ? 0 : 2);
+        const decimalPlaces = (id === 'kp' || id === 'ki' || id === 'kd') ? 2 : 0;
+        display.textContent = value.toFixed(decimalPlaces);
         
         const msg = {};
         msg[id] = value;
@@ -779,6 +846,14 @@ void core1_web_server(void* param) {
                   ",\"pid_out\":" + String(telemetry_pid_output, 1) +
                   ",\"left_pwm\":" + String((int)telemetry_left_pwm) +
                   ",\"right_pwm\":" + String((int)telemetry_right_pwm) +
+                  ",\"kp\":" + String(Kp, 2) +
+                  ",\"ki\":" + String(Ki, 2) +
+                  ",\"kd\":" + String(Kd, 2) +
+                  ",\"speed\":" + String((int)base_speed) +
+                  ",\"search\":" + String((int)search_speed) +
+                  ",\"turn\":" + String((int)turn_threshold_mm) +
+                  ",\"collision\":" + String((int)collision_threshold_mm) +
+                  ",\"side_max\":" + String((int)side_max_mm) +
                   ",\"tof_left\":" + String((int)tof_left_mm) +
                   ",\"tof_center\":" + String((int)tof_center_mm) +
                   ",\"tof_right\":" + String((int)tof_right_mm) +
@@ -803,6 +878,14 @@ void core1_web_server(void* param) {
                     ",\"pid_out\":" + String(telemetry_pid_output, 1) +
                     ",\"left_pwm\":" + String((int)telemetry_left_pwm) +
                     ",\"right_pwm\":" + String((int)telemetry_right_pwm) +
+                    ",\"kp\":" + String(Kp, 2) +
+                    ",\"ki\":" + String(Ki, 2) +
+                    ",\"kd\":" + String(Kd, 2) +
+                    ",\"speed\":" + String((int)base_speed) +
+                    ",\"search\":" + String((int)search_speed) +
+                    ",\"turn\":" + String((int)turn_threshold_mm) +
+                    ",\"collision\":" + String((int)collision_threshold_mm) +
+                    ",\"side_max\":" + String((int)side_max_mm) +
                     ",\"tof_left\":" + String((int)tof_left_mm) +
                     ",\"tof_center\":" + String((int)tof_center_mm) +
                     ",\"tof_right\":" + String((int)tof_right_mm) +
@@ -837,9 +920,14 @@ void setup() {
   Ki = prefs.getFloat("ki", 0.01);
   Kd = prefs.getFloat("kd", 2.0);
   base_speed = prefs.getFloat("speed", 150);
+  search_speed = prefs.getFloat("search", DEFAULT_SEARCH_SPEED);
+  turn_threshold_mm = prefs.getFloat("turn", DEFAULT_TOF_TURN_THRESHOLD_MM);
+  collision_threshold_mm = prefs.getFloat("collide", DEFAULT_TOF_COLLISION_THRESHOLD_MM);
+  side_max_mm = prefs.getFloat("side_max", DEFAULT_TOF_SIDE_MAX_MM);
   
-  Serial.println("\n[Flash] Loaded PID values:");
-  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f\n", Kp, Ki, Kd, base_speed);
+  Serial.println("\n[Flash] Loaded tuning values:");
+  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f\n", Kp, Ki, Kd, base_speed, search_speed);
+  Serial.printf("  Turn=%.0f mm  Collision=%.0f mm  OutLimit=%.0f mm\n", turn_threshold_mm, collision_threshold_mm, side_max_mm);
   
   // Initialize hardware
   Serial.println("\n[Hardware] Initializing...");
