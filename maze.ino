@@ -62,12 +62,17 @@ const char* password = "123tinkerspace";
 #define CONTROL_LOOP_HZ 50
 #define CONTROL_LOOP_MS (1000 / CONTROL_LOOP_HZ)
 
-// ToF thresholds (mm)
-#define DEFAULT_TOF_TURN_THRESHOLD_MM 150
-#define DEFAULT_TOF_COLLISION_THRESHOLD_MM 150
-#define DEFAULT_TOF_SIDE_MAX_MM 1000
+// ToF defaults tuned for:
+// - 23 cm track width
+// - 14 cm bot width, so centered side clearance is about 4.5 cm per side
+// - side ToFs about 2.5 cm from center and angled about 45 degrees
+// Expected centered angled side reading is roughly 125-140 mm.
+#define DEFAULT_TOF_TURN_THRESHOLD_MM 260
+#define DEFAULT_TOF_COLLISION_THRESHOLD_MM 140
+#define DEFAULT_TOF_SIDE_MAX_MM 450
+#define EXPECTED_CENTER_SIDE_READING_MM 130
 #define TOF_INVALID_READING_MM 8190
-#define DEFAULT_SEARCH_SPEED 90
+#define DEFAULT_SEARCH_SPEED 125
 
 // ESP32 PWM setup for DRV8833 motor inputs
 #define MOTOR_PWM_FREQ 20000
@@ -80,10 +85,10 @@ const char* password = "123tinkerspace";
 // ============= GLOBAL STATE =============
 
 // PID tuning parameters (volatile for live updates)
-volatile float Kp = 0.5;
-volatile float Ki = 0.01;
-volatile float Kd = 2.0;
-volatile float base_speed = 150;
+volatile float Kp = 1.2;
+volatile float Ki = 0.0;
+volatile float Kd = 0.8;
+volatile float base_speed = 180;
 volatile float search_speed = DEFAULT_SEARCH_SPEED;
 volatile float turn_threshold_mm = DEFAULT_TOF_TURN_THRESHOLD_MM;
 volatile float collision_threshold_mm = DEFAULT_TOF_COLLISION_THRESHOLD_MM;
@@ -336,7 +341,7 @@ void core0_control_loop(void* param) {
     
     // ===== CENTERING PID (left/right ToF error) =====
     // Positive error means the right side is more open, so steer right.
-    bool search_mode = !tof_left_valid || !tof_center_valid || !tof_right_valid;
+    bool search_mode = !tof_left_valid || !tof_right_valid;
     float error = (tof_left_valid && tof_right_valid) ? (tof_right_mm - tof_left_mm) / 10.0 : 0.0;
     
     pid_integral += error * (CONTROL_LOOP_MS / 1000.0);
@@ -624,50 +629,50 @@ String get_html_dashboard() {
         
         <div class="control-group">
           <label>Proportional (Kp)</label>
-          <input type="range" id="kp" min="0" max="5" step="0.1" value="0.5">
-          <span class="value-display" id="kp-val">0.50</span>
+          <input type="range" id="kp" min="0" max="5" step="0.1" value="1.2">
+          <span class="value-display" id="kp-val">1.20</span>
         </div>
         
         <div class="control-group">
           <label>Integral (Ki)</label>
-          <input type="range" id="ki" min="0" max="1" step="0.01" value="0.01">
-          <span class="value-display" id="ki-val">0.01</span>
+          <input type="range" id="ki" min="0" max="1" step="0.01" value="0.00">
+          <span class="value-display" id="ki-val">0.00</span>
         </div>
         
         <div class="control-group">
           <label>Derivative (Kd)</label>
-          <input type="range" id="kd" min="0" max="10" step="0.1" value="2.0">
-          <span class="value-display" id="kd-val">2.00</span>
+          <input type="range" id="kd" min="0" max="10" step="0.1" value="0.8">
+          <span class="value-display" id="kd-val">0.80</span>
         </div>
         
         <div class="control-group">
           <label>Base Speed (0-255)</label>
-          <input type="range" id="speed" min="0" max="255" step="5" value="150">
-          <span class="value-display" id="speed-val">150</span>
+          <input type="range" id="speed" min="0" max="255" step="5" value="180">
+          <span class="value-display" id="speed-val">180</span>
         </div>
 
         <div class="control-group">
           <label>Search Speed (0-255)</label>
-          <input type="range" id="search" min="0" max="255" step="5" value="90">
-          <span class="value-display" id="search-val">90</span>
+          <input type="range" id="search" min="0" max="255" step="5" value="125">
+          <span class="value-display" id="search-val">125</span>
         </div>
 
         <div class="control-group">
           <label>Turn Threshold (mm)</label>
-          <input type="range" id="turn" min="30" max="600" step="5" value="150">
-          <span class="value-display" id="turn-val">150</span>
+          <input type="range" id="turn" min="30" max="600" step="5" value="260">
+          <span class="value-display" id="turn-val">260</span>
         </div>
 
         <div class="control-group">
           <label>Collision Threshold (mm)</label>
-          <input type="range" id="collision" min="30" max="600" step="5" value="150">
-          <span class="value-display" id="collision-val">150</span>
+          <input type="range" id="collision" min="30" max="600" step="5" value="140">
+          <span class="value-display" id="collision-val">140</span>
         </div>
 
         <div class="control-group">
           <label>Out-of-Range Limit (mm)</label>
-          <input type="range" id="side_max" min="100" max="2000" step="25" value="1000">
-          <span class="value-display" id="side_max-val">1000</span>
+          <input type="range" id="side_max" min="100" max="2000" step="25" value="450">
+          <span class="value-display" id="side_max-val">450</span>
         </div>
         
         <div id="status" class="status disconnected">⚠️ Disconnected</div>
@@ -696,6 +701,10 @@ String get_html_dashboard() {
           <div class="telemetry-item">
             <span>ToF Error (cm)</span>
             <strong id="error">0.00</strong>
+          </div>
+          <div class="telemetry-item">
+            <span>Centered Side Target</span>
+            <strong id="side-target">130</strong>
           </div>
           <div class="telemetry-item">
             <span>PID Output</span>
@@ -742,6 +751,7 @@ String get_html_dashboard() {
         if (data.tof_left !== undefined) document.getElementById('tof-left').textContent = formatTof(data.tof_left, data.tof_left_valid, data.tof_left_fault);
         if (data.tof_center !== undefined) document.getElementById('tof-center').textContent = formatTof(data.tof_center, data.tof_center_valid, data.tof_center_fault);
         if (data.tof_right !== undefined) document.getElementById('tof-right').textContent = formatTof(data.tof_right, data.tof_right_valid, data.tof_right_fault);
+        if (data.side_target !== undefined) document.getElementById('side-target').textContent = data.side_target.toFixed(0);
         if (data.error !== undefined) document.getElementById('error').textContent = data.error.toFixed(2);
         if (data.pid_out !== undefined) document.getElementById('pid-out').textContent = data.pid_out.toFixed(1);
         if (data.left_pwm !== undefined) document.getElementById('left-pwm').textContent = data.left_pwm.toFixed(0);
@@ -857,6 +867,7 @@ void core1_web_server(void* param) {
                   ",\"tof_left\":" + String((int)tof_left_mm) +
                   ",\"tof_center\":" + String((int)tof_center_mm) +
                   ",\"tof_right\":" + String((int)tof_right_mm) +
+                  ",\"side_target\":" + String(EXPECTED_CENTER_SIDE_READING_MM) +
                   ",\"tof_left_valid\":" + String(tof_left_valid ? "true" : "false") +
                   ",\"tof_center_valid\":" + String(tof_center_valid ? "true" : "false") +
                   ",\"tof_right_valid\":" + String(tof_right_valid ? "true" : "false") +
@@ -889,6 +900,7 @@ void core1_web_server(void* param) {
                     ",\"tof_left\":" + String((int)tof_left_mm) +
                     ",\"tof_center\":" + String((int)tof_center_mm) +
                     ",\"tof_right\":" + String((int)tof_right_mm) +
+                    ",\"side_target\":" + String(EXPECTED_CENTER_SIDE_READING_MM) +
                     ",\"tof_left_valid\":" + String(tof_left_valid ? "true" : "false") +
                     ",\"tof_center_valid\":" + String(tof_center_valid ? "true" : "false") +
                     ",\"tof_right_valid\":" + String(tof_right_valid ? "true" : "false") +
@@ -916,10 +928,10 @@ void setup() {
   
   // Initialize preferences
   prefs.begin("maze_robot", false);
-  Kp = prefs.getFloat("kp", 0.5);
-  Ki = prefs.getFloat("ki", 0.01);
-  Kd = prefs.getFloat("kd", 2.0);
-  base_speed = prefs.getFloat("speed", 150);
+  Kp = prefs.getFloat("kp", 1.2);
+  Ki = prefs.getFloat("ki", 0.0);
+  Kd = prefs.getFloat("kd", 0.8);
+  base_speed = prefs.getFloat("speed", 180);
   search_speed = prefs.getFloat("search", DEFAULT_SEARCH_SPEED);
   turn_threshold_mm = prefs.getFloat("turn", DEFAULT_TOF_TURN_THRESHOLD_MM);
   collision_threshold_mm = prefs.getFloat("collide", DEFAULT_TOF_COLLISION_THRESHOLD_MM);
