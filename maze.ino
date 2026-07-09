@@ -67,6 +67,7 @@ const char* password = "123tinkerspace";
 #define TOF_COLLISION_THRESHOLD_MM 150
 #define TOF_SIDE_MAX_MM 1000
 #define TOF_INVALID_READING_MM 8190
+#define SEARCH_SPEED 90
 
 // ESP32 PWM setup for DRV8833 motor inputs
 #define MOTOR_PWM_FREQ 20000
@@ -95,6 +96,9 @@ volatile int16_t tof_right_mm = 200;
 volatile bool tof_left_valid = false;
 volatile bool tof_center_valid = false;
 volatile bool tof_right_valid = false;
+volatile bool tof_left_fault = true;
+volatile bool tof_center_fault = true;
+volatile bool tof_right_fault = true;
 
 // Telemetry
 volatile float telemetry_error = 0;
@@ -226,20 +230,30 @@ void init_motors() {
 
 void read_tof_sensors() {
   int16_t left = tof_left_ok ? tof_left.readRangeContinuousMillimeters() : -1;
+  bool left_timeout = tof_left_ok && tof_left.timeoutOccurred();
   int16_t center = tof_center_ok ? tof_center.readRangeContinuousMillimeters() : -1;
+  bool center_timeout = tof_center_ok && tof_center.timeoutOccurred();
   int16_t right = tof_right_ok ? tof_right.readRangeContinuousMillimeters() : -1;
+  bool right_timeout = tof_right_ok && tof_right.timeoutOccurred();
 
-  bool left_valid = tof_left_ok && !tof_left.timeoutOccurred() && left > 0 && left < TOF_INVALID_READING_MM;
-  bool center_valid = tof_center_ok && !tof_center.timeoutOccurred() && center > 0 && center < TOF_INVALID_READING_MM;
-  bool right_valid = tof_right_ok && !tof_right.timeoutOccurred() && right > 0 && right < TOF_INVALID_READING_MM;
+  bool left_fault = !tof_left_ok || left_timeout || left <= 0;
+  bool center_fault = !tof_center_ok || center_timeout || center <= 0;
+  bool right_fault = !tof_right_ok || right_timeout || right <= 0;
+
+  bool left_valid = !left_fault && left < TOF_INVALID_READING_MM;
+  bool center_valid = !center_fault && center < TOF_INVALID_READING_MM;
+  bool right_valid = !right_fault && right < TOF_INVALID_READING_MM;
 
   tof_left_valid = left_valid;
   tof_center_valid = center_valid;
   tof_right_valid = right_valid;
+  tof_left_fault = left_fault;
+  tof_center_fault = center_fault;
+  tof_right_fault = right_fault;
 
-  tof_left_mm = left_valid ? left : -1;
-  tof_center_mm = center_valid ? center : -1;
-  tof_right_mm = right_valid ? right : -1;
+  tof_left_mm = left_fault ? -1 : left;
+  tof_center_mm = center_fault ? -1 : center;
+  tof_right_mm = right_fault ? -1 : right;
 }
 
 // ============= MOTOR CONTROL =============
@@ -269,7 +283,7 @@ void core0_control_loop(void* param) {
     // Read the three ToF sensors
     read_tof_sensors();
 
-    if (!tof_left_valid || !tof_center_valid || !tof_right_valid) {
+    if (tof_left_fault || tof_center_fault || tof_right_fault) {
       set_motor_speed(0, 0);
       telemetry_error = 0;
       telemetry_pid_output = 0;
@@ -285,17 +299,19 @@ void core0_control_loop(void* param) {
     int turn_signal = 0;
     float speed_reduction = 1.0;
     
-    if (tof_center_mm < TOF_TURN_THRESHOLD_MM) {
-      if (tof_right_mm > tof_left_mm + 20) {
+    if (tof_center_valid && tof_center_mm < TOF_TURN_THRESHOLD_MM) {
+      int left_compare = tof_left_valid ? tof_left_mm : TOF_SIDE_MAX_MM;
+      int right_compare = tof_right_valid ? tof_right_mm : TOF_SIDE_MAX_MM;
+      if (right_compare > left_compare + 20) {
         turn_signal = 1;
         speed_reduction = 0.6;
-      } else if (tof_left_mm > tof_right_mm + 20) {
+      } else if (left_compare > right_compare + 20) {
         turn_signal = -1;
         speed_reduction = 0.6;
       }
     }
     
-    if (tof_center_mm < TOF_COLLISION_THRESHOLD_MM) {
+    if (tof_center_valid && tof_center_mm < TOF_COLLISION_THRESHOLD_MM) {
       set_motor_speed(0, 0);
       telemetry_error = 0;
       telemetry_pid_output = 0;
@@ -309,7 +325,8 @@ void core0_control_loop(void* param) {
     
     // ===== CENTERING PID (left/right ToF error) =====
     // Positive error means the right side is more open, so steer right.
-    float error = (tof_right_mm - tof_left_mm) / 10.0;
+    bool search_mode = !tof_left_valid || !tof_center_valid || !tof_right_valid;
+    float error = (tof_left_valid && tof_right_valid) ? (tof_right_mm - tof_left_mm) / 10.0 : 0.0;
     
     pid_integral += error * (CONTROL_LOOP_MS / 1000.0);
     pid_integral = constrain(pid_integral, -50, 50);
@@ -321,8 +338,9 @@ void core0_control_loop(void* param) {
     
     float steering = constrain(pid_output, -100, 100);
     
-    float left_base = base_speed * speed_reduction;
-    float right_base = base_speed * speed_reduction;
+    float active_speed = search_mode ? min(base_speed, (float)SEARCH_SPEED) : base_speed;
+    float left_base = active_speed * speed_reduction;
+    float right_base = active_speed * speed_reduction;
     
     float left_motor = left_base + steering + (turn_signal * 50);
     float right_motor = right_base - steering - (turn_signal * 50);
@@ -337,7 +355,7 @@ void core0_control_loop(void* param) {
     telemetry_pid_output = pid_output;
     telemetry_left_pwm = left_motor;
     telemetry_right_pwm = right_motor;
-    telemetry_status = "RUN";
+    telemetry_status = search_mode ? "SEARCH FWD" : "RUN";
     loop_count++;
     
     vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONTROL_LOOP_MS));
@@ -654,11 +672,15 @@ String get_html_dashboard() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        const formatTof = (value, valid) => valid ? value.toFixed(0) : 'FAULT';
+        const formatTof = (value, valid, fault) => {
+          if (fault) return 'FAULT';
+          if (!valid) return 'OUT';
+          return value.toFixed(0);
+        };
         if (data.status !== undefined) document.getElementById('robot-status').textContent = data.status;
-        if (data.tof_left !== undefined) document.getElementById('tof-left').textContent = formatTof(data.tof_left, data.tof_left_valid);
-        if (data.tof_center !== undefined) document.getElementById('tof-center').textContent = formatTof(data.tof_center, data.tof_center_valid);
-        if (data.tof_right !== undefined) document.getElementById('tof-right').textContent = formatTof(data.tof_right, data.tof_right_valid);
+        if (data.tof_left !== undefined) document.getElementById('tof-left').textContent = formatTof(data.tof_left, data.tof_left_valid, data.tof_left_fault);
+        if (data.tof_center !== undefined) document.getElementById('tof-center').textContent = formatTof(data.tof_center, data.tof_center_valid, data.tof_center_fault);
+        if (data.tof_right !== undefined) document.getElementById('tof-right').textContent = formatTof(data.tof_right, data.tof_right_valid, data.tof_right_fault);
         if (data.error !== undefined) document.getElementById('error').textContent = data.error.toFixed(2);
         if (data.pid_out !== undefined) document.getElementById('pid-out').textContent = data.pid_out.toFixed(1);
         if (data.left_pwm !== undefined) document.getElementById('left-pwm').textContent = data.left_pwm.toFixed(0);
@@ -759,6 +781,9 @@ void core1_web_server(void* param) {
                   ",\"tof_left_valid\":" + String(tof_left_valid ? "true" : "false") +
                   ",\"tof_center_valid\":" + String(tof_center_valid ? "true" : "false") +
                   ",\"tof_right_valid\":" + String(tof_right_valid ? "true" : "false") +
+                  ",\"tof_left_fault\":" + String(tof_left_fault ? "true" : "false") +
+                  ",\"tof_center_fault\":" + String(tof_center_fault ? "true" : "false") +
+                  ",\"tof_right_fault\":" + String(tof_right_fault ? "true" : "false") +
                   ",\"status\":\"" + String((const char*)telemetry_status) + "\"" +
                   ",\"loop_count\":" + String(loop_count) + "}";
     request->send(200, "application/json", json);
@@ -780,6 +805,9 @@ void core1_web_server(void* param) {
                     ",\"tof_left_valid\":" + String(tof_left_valid ? "true" : "false") +
                     ",\"tof_center_valid\":" + String(tof_center_valid ? "true" : "false") +
                     ",\"tof_right_valid\":" + String(tof_right_valid ? "true" : "false") +
+                    ",\"tof_left_fault\":" + String(tof_left_fault ? "true" : "false") +
+                    ",\"tof_center_fault\":" + String(tof_center_fault ? "true" : "false") +
+                    ",\"tof_right_fault\":" + String(tof_right_fault ? "true" : "false") +
                     ",\"status\":\"" + String((const char*)telemetry_status) + "\"}";
       ws.textAll(json);
       last_broadcast = millis();
