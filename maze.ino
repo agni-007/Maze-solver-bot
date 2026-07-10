@@ -76,7 +76,7 @@ const char* password = "123tinkerspace";
 
 // ESP32 PWM setup for DRV8833 motor inputs
 #define MOTOR_PWM_FREQ 20000
-#define MOTOR_PWM_RESOLUTION 8
+#define MOTOR_PWM_RESOLUTION 10
 #define LEFT_FWD_CH 0
 #define LEFT_REV_CH 1
 #define RIGHT_FWD_CH 2
