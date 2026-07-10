@@ -13,7 +13,7 @@
     - IN3: 33 (RIGHT FWD)
     - IN4: 25 (RIGHT REV)
   
-  ToF & I2C::
+  ToF & I2C:
     - XSHUT LEFT: 4
     - XSHUT CENTER: 5
     - XSHUT RIGHT: 18
@@ -67,6 +67,8 @@ const char* ap_password = "maze1234";
 // - 23 cm track width
 // - 14 cm bot width, so centered side clearance is about 4.5 cm per side
 // - side ToFs about 2.5 cm from center and angled about 45 degrees
+// - motor axle to center ToF: 10.5 cm; motor axle to side ToFs: 8.5 cm
+// - wheel separation: 10 cm
 // Expected centered angled side reading is roughly 125-140 mm.
 #define DEFAULT_TOF_TURN_THRESHOLD_MM 260
 #define DEFAULT_TOF_COLLISION_THRESHOLD_MM 140
@@ -74,13 +76,19 @@ const char* ap_password = "maze1234";
 #define EXPECTED_CENTER_SIDE_READING_MM 130
 #define TOF_INVALID_READING_MM 8190
 #define DEFAULT_SEARCH_SPEED 125
-#define DEFAULT_TURN_STRENGTH 90
+#define DEFAULT_TURN_STRENGTH 50
+#define DEFAULT_TURN_APPROACH_MS 350
+#define DEFAULT_TURN_RAMP_MS 450
 #define TOF_TIMEOUT_MS 40
 #define TOF_TIMING_BUDGET_US 20000
 #define TOF_CONTINUOUS_PERIOD_MS 25
-#define TURN_MIN_DURATION_MS 250
-#define TURN_MAX_DURATION_MS 1200
+#define TURN_MIN_CURVE_MS 500
+#define TURN_MAX_CURVE_MS 1800
 #define TURN_CLEAR_MARGIN_MM 80
+#define TURN_DETECT_CONFIRM_MS 80
+#define TURN_COOLDOWN_MS 500
+#define TURN_SPEED_FACTOR 0.80f
+#define TURN_MAX_DIFFERENTIAL_FACTOR 0.55f
 
 // ESP32 PWM setup for DRV8833 motor inputs
 #define MOTOR_PWM_FREQ 20000
@@ -102,12 +110,19 @@ volatile float turn_threshold_mm = DEFAULT_TOF_TURN_THRESHOLD_MM;
 volatile float collision_threshold_mm = DEFAULT_TOF_COLLISION_THRESHOLD_MM;
 volatile float side_max_mm = DEFAULT_TOF_SIDE_MAX_MM;
 volatile float turn_strength = DEFAULT_TURN_STRENGTH;
+volatile float turn_approach_ms = DEFAULT_TURN_APPROACH_MS;
+volatile float turn_ramp_ms = DEFAULT_TURN_RAMP_MS;
 
 // Control state
 float pid_integral = 0.0;
 float pid_prev_error = 0.0;
-int8_t active_turn_direction = 0;
-uint32_t active_turn_started_ms = 0;
+enum TurnPhase : uint8_t { TURN_IDLE, TURN_APPROACH, TURN_CURVE };
+TurnPhase turn_phase = TURN_IDLE;
+int8_t turn_direction = 0;
+uint32_t turn_phase_started_ms = 0;
+int8_t turn_candidate_direction = 0;
+uint32_t turn_candidate_started_ms = 0;
+uint32_t last_turn_finished_ms = 0;
 
 // Sensor readings (updated by Core 0)
 volatile int16_t tof_left_mm = 200;
@@ -332,42 +347,62 @@ void core0_control_loop(void* param) {
       continue;
     }
     
-    // ===== TURN DETECTION (front ToF) =====
-    int turn_signal = 0;
-    float speed_reduction = 1.0;
+    // ===== SMOOTH TURN STATE MACHINE =====
     float turn_threshold = turn_threshold_mm;
     float collision_threshold = collision_threshold_mm;
     int side_max = (int)side_max_mm;
     bool front_turn_zone = tof_center_valid && tof_center_mm < turn_threshold;
+    bool one_side_open = tof_left_valid != tof_right_valid;
+    bool turn_candidate = front_turn_zone || one_side_open;
+    uint32_t now_ms = millis();
 
-    if (active_turn_direction != 0) {
-      uint32_t turn_elapsed = millis() - active_turn_started_ms;
-      bool front_clear = !tof_center_valid || tof_center_mm > turn_threshold + TURN_CLEAR_MARGIN_MM;
-      if ((turn_elapsed >= TURN_MIN_DURATION_MS && front_clear) || turn_elapsed >= TURN_MAX_DURATION_MS) {
-        active_turn_direction = 0;
-      }
-    }
-
-    if (active_turn_direction == 0 && front_turn_zone) {
+    if (turn_phase == TURN_IDLE && turn_candidate && now_ms - last_turn_finished_ms >= TURN_COOLDOWN_MS) {
       int left_compare = tof_left_valid ? tof_left_mm : side_max;
       int right_compare = tof_right_valid ? tof_right_mm : side_max;
-      if (right_compare > left_compare + 20) {
-        active_turn_direction = 1;
-        active_turn_started_ms = millis();
-      } else if (left_compare > right_compare + 20) {
-        active_turn_direction = -1;
-        active_turn_started_ms = millis();
+      int8_t sensed_direction = 0;
+      if (right_compare > left_compare + 20) sensed_direction = 1;
+      else if (left_compare > right_compare + 20) sensed_direction = -1;
+
+      if (sensed_direction != turn_candidate_direction) {
+        turn_candidate_direction = sensed_direction;
+        turn_candidate_started_ms = now_ms;
+      }
+
+      if (sensed_direction != 0 && now_ms - turn_candidate_started_ms >= TURN_DETECT_CONFIRM_MS) {
+        turn_direction = sensed_direction;
+        turn_phase = TURN_APPROACH;
+        turn_phase_started_ms = now_ms;
+        turn_candidate_direction = 0;
+      }
+    } else if (turn_phase == TURN_IDLE && !turn_candidate) {
+      turn_candidate_direction = 0;
+    }
+
+    if (turn_phase == TURN_APPROACH) {
+      uint32_t approach_elapsed = now_ms - turn_phase_started_ms;
+      bool front_near = tof_center_valid && tof_center_mm <= collision_threshold + 20;
+      if (approach_elapsed >= (uint32_t)turn_approach_ms || front_near) {
+        turn_phase = TURN_CURVE;
+        turn_phase_started_ms = now_ms;
       }
     }
 
-    if (active_turn_direction != 0) {
-      turn_signal = active_turn_direction;
-      speed_reduction = 0.65;
+    if (turn_phase == TURN_CURVE) {
+      uint32_t curve_elapsed = now_ms - turn_phase_started_ms;
+      bool front_clear = !tof_center_valid || tof_center_mm > turn_threshold + TURN_CLEAR_MARGIN_MM;
+      if ((curve_elapsed >= TURN_MIN_CURVE_MS && front_clear) || curve_elapsed >= TURN_MAX_CURVE_MS) {
+        turn_phase = TURN_IDLE;
+        turn_direction = 0;
+        turn_candidate_direction = 0;
+        last_turn_finished_ms = now_ms;
+      }
     }
 
-    bool search_mode = (!tof_left_valid || !tof_right_valid) && turn_signal == 0 && !front_turn_zone;
+    bool approach_mode = turn_phase == TURN_APPROACH;
+    bool curve_mode = turn_phase == TURN_CURVE;
+    bool search_mode = (!tof_left_valid || !tof_right_valid) && turn_phase == TURN_IDLE && !front_turn_zone;
     
-    if (tof_center_valid && tof_center_mm < collision_threshold && turn_signal == 0) {
+    if (tof_center_valid && tof_center_mm < collision_threshold && turn_phase == TURN_IDLE) {
       set_motor_speed(0, 0);
       telemetry_error = 0;
       telemetry_pid_output = 0;
@@ -381,11 +416,11 @@ void core0_control_loop(void* param) {
     
     // ===== CENTERING PID (left/right ToF error) =====
     // Positive error means the right side is more open, so steer right.
-    float error = (!search_mode && turn_signal == 0 && tof_left_valid && tof_right_valid)
+    float error = (!search_mode && turn_phase == TURN_IDLE && tof_left_valid && tof_right_valid)
                     ? (tof_right_mm - tof_left_mm) / 10.0
                     : 0.0;
 
-    if (search_mode || turn_signal != 0) {
+    if (search_mode || turn_phase != TURN_IDLE) {
       pid_integral = 0.0;
       pid_prev_error = 0.0;
     }
@@ -403,13 +438,21 @@ void core0_control_loop(void* param) {
     float current_base_speed = base_speed;
     float current_search_speed = search_speed;
     float active_speed = current_base_speed;
-    if (search_mode && active_speed > current_search_speed) {
+    if ((search_mode || approach_mode) && active_speed > current_search_speed) {
       active_speed = current_search_speed;
     }
-    float left_base = active_speed * speed_reduction;
-    float right_base = active_speed * speed_reduction;
-    
-    float turn_adjustment = turn_signal * turn_strength;
+    float speed_factor = curve_mode ? TURN_SPEED_FACTOR : 1.0f;
+    float left_base = active_speed * speed_factor;
+    float right_base = active_speed * speed_factor;
+
+    float turn_adjustment = 0.0f;
+    if (curve_mode) {
+      uint32_t curve_elapsed = now_ms - turn_phase_started_ms;
+      float ramp_duration = max(100.0f, (float)turn_ramp_ms);
+      float ramp_progress = constrain(curve_elapsed / ramp_duration, 0.0f, 1.0f);
+      float max_adjustment = min((float)turn_strength, left_base * TURN_MAX_DIFFERENTIAL_FACTOR);
+      turn_adjustment = turn_direction * max_adjustment * ramp_progress;
+    }
     float left_motor = left_base + steering + turn_adjustment;
     float right_motor = right_base - steering - turn_adjustment;
     
@@ -423,8 +466,10 @@ void core0_control_loop(void* param) {
     telemetry_pid_output = pid_output;
     telemetry_left_pwm = left_motor;
     telemetry_right_pwm = right_motor;
-    if (turn_signal > 0) telemetry_status = "TURN RIGHT";
-    else if (turn_signal < 0) telemetry_status = "TURN LEFT";
+    if (approach_mode && turn_direction > 0) telemetry_status = "APPROACH RIGHT";
+    else if (approach_mode && turn_direction < 0) telemetry_status = "APPROACH LEFT";
+    else if (curve_mode && turn_direction > 0) telemetry_status = "CURVE RIGHT";
+    else if (curve_mode && turn_direction < 0) telemetry_status = "CURVE LEFT";
     else telemetry_status = search_mode ? "SEARCH FWD" : "RUN";
     loop_count++;
     
@@ -447,6 +492,8 @@ String build_telemetry_json() {
          ",\"speed\":" + String((int)base_speed) +
          ",\"search\":" + String((int)search_speed) +
          ",\"turn_strength\":" + String((int)turn_strength) +
+         ",\"turn_approach\":" + String((int)turn_approach_ms) +
+         ",\"turn_ramp\":" + String((int)turn_ramp_ms) +
          ",\"turn\":" + String((int)turn_threshold_mm) +
          ",\"collision\":" + String((int)collision_threshold_mm) +
          ",\"side_max\":" + String((int)side_max_mm) +
@@ -486,8 +533,14 @@ bool update_tuning_value(const String& key, float value) {
     search_speed = constrain(value, 0.0f, 255.0f);
     prefs.putFloat("search", search_speed);
   } else if (key == "turn_strength") {
-    turn_strength = constrain(value, 30.0f, 140.0f);
-    prefs.putFloat("turn_power", turn_strength);
+    turn_strength = constrain(value, 10.0f, 90.0f);
+    prefs.putFloat("turn_curve", turn_strength);
+  } else if (key == "turn_approach") {
+    turn_approach_ms = constrain(value, 0.0f, 1000.0f);
+    prefs.putFloat("turn_appr", turn_approach_ms);
+  } else if (key == "turn_ramp") {
+    turn_ramp_ms = constrain(value, 100.0f, 1200.0f);
+    prefs.putFloat("turn_ramp", turn_ramp_ms);
   } else if (key == "turn") {
     turn_threshold_mm = constrain(value, 30.0f, 600.0f);
     prefs.putFloat("turn", turn_threshold_mm);
@@ -679,8 +732,20 @@ String get_html_dashboard() {
 
         <div class="control-group">
           <label>Turn Strength (PWM)</label>
-          <input type="range" id="turn_strength" min="30" max="140" step="5" value="90">
-          <span class="value-display" id="turn_strength-val">90</span>
+          <input type="range" id="turn_strength" min="10" max="90" step="5" value="50">
+          <span class="value-display" id="turn_strength-val">50</span>
+        </div>
+
+        <div class="control-group">
+          <label>Straight Before Turn (ms)</label>
+          <input type="range" id="turn_approach" min="0" max="1000" step="25" value="350">
+          <span class="value-display" id="turn_approach-val">350</span>
+        </div>
+
+        <div class="control-group">
+          <label>Turn Ramp Time (ms)</label>
+          <input type="range" id="turn_ramp" min="100" max="1200" step="25" value="450">
+          <span class="value-display" id="turn_ramp-val">450</span>
         </div>
 
         <div class="control-group">
@@ -806,7 +871,7 @@ String get_html_dashboard() {
           previousLoopCount = data.loop_count;
           previousLoopTime = now;
         }
-        ['kp', 'ki', 'kd', 'speed', 'search', 'turn_strength', 'turn', 'collision', 'side_max'].forEach(id => {
+        ['kp', 'ki', 'kd', 'speed', 'search', 'turn_strength', 'turn_approach', 'turn_ramp', 'turn', 'collision', 'side_max'].forEach(id => {
           if (data[id] !== undefined) {
             const slider = document.getElementById(id);
             const display = document.getElementById(id + '-val');
@@ -841,7 +906,7 @@ String get_html_dashboard() {
     pollTelemetry();
     setInterval(pollTelemetry, 500);
     
-    ['kp', 'ki', 'kd', 'speed', 'search', 'turn_strength', 'turn', 'collision', 'side_max'].forEach(id => {
+    ['kp', 'ki', 'kd', 'speed', 'search', 'turn_strength', 'turn_approach', 'turn_ramp', 'turn', 'collision', 'side_max'].forEach(id => {
       const slider = document.getElementById(id);
       const display = document.getElementById(id + '-val');
       
@@ -938,13 +1003,16 @@ void setup() {
   Kd = prefs.getFloat("kd", 0.8);
   base_speed = prefs.getFloat("speed", 180);
   search_speed = prefs.getFloat("search", DEFAULT_SEARCH_SPEED);
-  turn_strength = prefs.getFloat("turn_power", DEFAULT_TURN_STRENGTH);
+  turn_strength = prefs.getFloat("turn_curve", DEFAULT_TURN_STRENGTH);
+  turn_approach_ms = prefs.getFloat("turn_appr", DEFAULT_TURN_APPROACH_MS);
+  turn_ramp_ms = prefs.getFloat("turn_ramp", DEFAULT_TURN_RAMP_MS);
   turn_threshold_mm = prefs.getFloat("turn", DEFAULT_TOF_TURN_THRESHOLD_MM);
   collision_threshold_mm = prefs.getFloat("collide", DEFAULT_TOF_COLLISION_THRESHOLD_MM);
   side_max_mm = prefs.getFloat("side_max", DEFAULT_TOF_SIDE_MAX_MM);
   
   Serial.println("\n[Flash] Loaded tuning values:");
-  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f  TurnStrength=%.0f\n", Kp, Ki, Kd, base_speed, search_speed, turn_strength);
+  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f\n", Kp, Ki, Kd, base_speed, search_speed);
+  Serial.printf("  TurnStrength=%.0f  Approach=%.0f ms  Ramp=%.0f ms\n", turn_strength, turn_approach_ms, turn_ramp_ms);
   Serial.printf("  Turn=%.0f mm  Collision=%.0f mm  OutLimit=%.0f mm\n", turn_threshold_mm, collision_threshold_mm, side_max_mm);
   
   // Initialize hardware
