@@ -27,6 +27,7 @@
 */
 
 #include <WiFi.h>
+#include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
 #include <Wire.h>
 #include <VL53L0X.h>
@@ -73,7 +74,6 @@ const char* ap_password = "maze1234";
 #define EXPECTED_CENTER_SIDE_READING_MM 130
 #define TOF_INVALID_READING_MM 8190
 #define DEFAULT_SEARCH_SPEED 125
-#define DEFAULT_LEFT_MOTOR_BOOST 8
 
 // ESP32 PWM setup for DRV8833 motor inputs
 #define MOTOR_PWM_FREQ 20000
@@ -94,7 +94,6 @@ volatile float search_speed = DEFAULT_SEARCH_SPEED;
 volatile float turn_threshold_mm = DEFAULT_TOF_TURN_THRESHOLD_MM;
 volatile float collision_threshold_mm = DEFAULT_TOF_COLLISION_THRESHOLD_MM;
 volatile float side_max_mm = DEFAULT_TOF_SIDE_MAX_MM;
-volatile float left_motor_boost = DEFAULT_LEFT_MOTOR_BOOST;
 
 // Control state
 float pid_integral = 0.0;
@@ -127,6 +126,7 @@ bool tof_right_ok = false;
 
 // Web server
 AsyncWebServer server(80);
+DNSServer dns_server;
 
 // Preferences
 Preferences prefs;
@@ -315,8 +315,9 @@ void core0_control_loop(void* param) {
     float turn_threshold = turn_threshold_mm;
     float collision_threshold = collision_threshold_mm;
     int side_max = (int)side_max_mm;
+    bool search_mode = !tof_left_valid || !tof_right_valid;
     
-    if (tof_center_valid && tof_center_mm < turn_threshold) {
+    if (!search_mode && tof_center_valid && tof_center_mm < turn_threshold) {
       int left_compare = tof_left_valid ? tof_left_mm : side_max;
       int right_compare = tof_right_valid ? tof_right_mm : side_max;
       if (right_compare > left_compare + 20) {
@@ -342,8 +343,12 @@ void core0_control_loop(void* param) {
     
     // ===== CENTERING PID (left/right ToF error) =====
     // Positive error means the right side is more open, so steer right.
-    bool search_mode = !tof_left_valid || !tof_right_valid;
     float error = (tof_left_valid && tof_right_valid) ? (tof_right_mm - tof_left_mm) / 10.0 : 0.0;
+
+    if (search_mode) {
+      pid_integral = 0.0;
+      pid_prev_error = 0.0;
+    }
     
     pid_integral += error * (CONTROL_LOOP_MS / 1000.0);
     pid_integral = constrain(pid_integral, -50, 50);
@@ -364,7 +369,7 @@ void core0_control_loop(void* param) {
     float left_base = active_speed * speed_reduction;
     float right_base = active_speed * speed_reduction;
     
-    float left_motor = left_base + steering + (turn_signal * 50) + left_motor_boost;
+    float left_motor = left_base + steering + (turn_signal * 50);
     float right_motor = right_base - steering - (turn_signal * 50);
     
     left_motor = constrain(left_motor, 0, 255);
@@ -397,7 +402,6 @@ String build_telemetry_json() {
          ",\"ki\":" + String(Ki, 2) +
          ",\"kd\":" + String(Kd, 2) +
          ",\"speed\":" + String((int)base_speed) +
-         ",\"left_boost\":" + String((int)left_motor_boost) +
          ",\"search\":" + String((int)search_speed) +
          ",\"turn\":" + String((int)turn_threshold_mm) +
          ",\"collision\":" + String((int)collision_threshold_mm) +
@@ -430,9 +434,6 @@ bool update_tuning_value(const String& key, float value) {
   } else if (key == "speed") {
     base_speed = constrain(value, 0.0f, 255.0f);
     prefs.putFloat("speed", base_speed);
-  } else if (key == "left_boost") {
-    left_motor_boost = constrain(value, -40.0f, 40.0f);
-    prefs.putFloat("left_boost", left_motor_boost);
   } else if (key == "search") {
     search_speed = constrain(value, 0.0f, 255.0f);
     prefs.putFloat("search", search_speed);
@@ -570,14 +571,6 @@ String get_html_dashboard() {
       font-size: 16px;
       font-family: 'Courier New', monospace;
     }
-    canvas {
-      display: block;
-      width: 100%;
-      height: 220px;
-      margin-top: 20px;
-      background: white;
-      border-radius: 6px;
-    }
     .status {
       padding: 12px;
       border-radius: 6px;
@@ -625,12 +618,6 @@ String get_html_dashboard() {
           <label>Base Speed (0-255)</label>
           <input type="range" id="speed" min="0" max="255" step="5" value="180">
           <span class="value-display" id="speed-val">180</span>
-        </div>
-
-        <div class="control-group">
-          <label>Left Motor Boost (-40 to +40)</label>
-          <input type="range" id="left_boost" min="-40" max="40" step="1" value="8">
-          <span class="value-display" id="left_boost-val">8</span>
         </div>
 
         <div class="control-group">
@@ -702,41 +689,14 @@ String get_html_dashboard() {
           </div>
         </div>
         
-        <canvas id="errorChart" width="600" height="220"></canvas>
       </div>
     </div>
   </div>
 
   <script>
     const status = document.getElementById('status');
-    const errorHistory = [];
     const tuneTimers = {};
-    const errorCanvas = document.getElementById('errorChart');
-    const errorContext = errorCanvas.getContext('2d');
-
-    function drawErrorChart() {
-      const width = errorCanvas.width;
-      const height = errorCanvas.height;
-      const middle = height / 2;
-      errorContext.clearRect(0, 0, width, height);
-      errorContext.strokeStyle = '#e1e4e8';
-      errorContext.lineWidth = 1;
-      errorContext.beginPath();
-      errorContext.moveTo(0, middle);
-      errorContext.lineTo(width, middle);
-      errorContext.stroke();
-      if (errorHistory.length < 2) return;
-      errorContext.strokeStyle = '#667eea';
-      errorContext.lineWidth = 2;
-      errorContext.beginPath();
-      errorHistory.forEach((value, index) => {
-        const x = index * width / 49;
-        const y = middle - Math.max(-5, Math.min(5, value)) * (height / 12);
-        if (index === 0) errorContext.moveTo(x, y);
-        else errorContext.lineTo(x, y);
-      });
-      errorContext.stroke();
-    }
+    let telemetryRequestActive = false;
 
     function applyTelemetry(data) {
       try {
@@ -754,7 +714,7 @@ String get_html_dashboard() {
         if (data.pid_out !== undefined) document.getElementById('pid-out').textContent = data.pid_out.toFixed(1);
         if (data.left_pwm !== undefined) document.getElementById('left-pwm').textContent = data.left_pwm.toFixed(0);
         if (data.right_pwm !== undefined) document.getElementById('right-pwm').textContent = data.right_pwm.toFixed(0);
-        ['kp', 'ki', 'kd', 'speed', 'left_boost', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
+        ['kp', 'ki', 'kd', 'speed', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
           if (data[id] !== undefined) {
             const slider = document.getElementById(id);
             const display = document.getElementById(id + '-val');
@@ -764,15 +724,14 @@ String get_html_dashboard() {
           }
         });
         
-        errorHistory.push(Number(data.error) || 0);
-        if (errorHistory.length > 50) errorHistory.shift();
-        drawErrorChart();
       } catch (e) {
         console.log('Telemetry update failed', e);
       }
     }
 
     async function pollTelemetry() {
+      if (telemetryRequestActive) return;
+      telemetryRequestActive = true;
       try {
         const response = await fetch('/telemetry?t=' + Date.now(), { cache: 'no-store' });
         if (!response.ok) throw new Error('Telemetry request failed');
@@ -782,13 +741,15 @@ String get_html_dashboard() {
       } catch (e) {
         status.textContent = 'Robot disconnected';
         status.className = 'status disconnected';
+      } finally {
+        telemetryRequestActive = false;
       }
     }
 
     pollTelemetry();
-    setInterval(pollTelemetry, 200);
+    setInterval(pollTelemetry, 500);
     
-    ['kp', 'ki', 'kd', 'speed', 'left_boost', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
+    ['kp', 'ki', 'kd', 'speed', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
       const slider = document.getElementById(id);
       const display = document.getElementById(id + '-val');
       
@@ -815,15 +776,17 @@ void core1_web_server(void* param) {
   Serial.println("\n[Core 1] Direct dashboard access point starting...");
   
   WiFi.mode(WIFI_AP);
+  WiFi.setSleep(false);
   IPAddress ap_ip(192, 168, 4, 1);
   IPAddress ap_subnet(255, 255, 255, 0);
   WiFi.softAPConfig(ap_ip, ap_ip, ap_subnet);
-  bool ap_started = WiFi.softAP(ap_ssid, ap_password);
+  bool ap_started = WiFi.softAP(ap_ssid, ap_password, 6, false, 2);
   Serial.printf("  Network: %s\n", ap_ssid);
   Serial.printf("  Password: %s\n", ap_password);
   Serial.print("  Dashboard: http://");
   Serial.println(WiFi.softAPIP());
   if (!ap_started) Serial.println("  WARNING: access point failed to start");
+  dns_server.start(53, "*", WiFi.softAPIP());
   
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
     AsyncWebServerResponse* response = request->beginResponse(200, "text/html", get_html_dashboard());
@@ -851,12 +814,17 @@ void core1_web_server(void* param) {
     }
     request->send(200, "application/json", "{\"ok\":true}");
   });
+
+  server.onNotFound([](AsyncWebServerRequest* request) {
+    request->redirect("http://192.168.4.1/");
+  });
   
   server.begin();
   Serial.println("[Web] Direct dashboard server started");
 
   while (1) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    dns_server.processNextRequest();
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
@@ -881,10 +849,9 @@ void setup() {
   turn_threshold_mm = prefs.getFloat("turn", DEFAULT_TOF_TURN_THRESHOLD_MM);
   collision_threshold_mm = prefs.getFloat("collide", DEFAULT_TOF_COLLISION_THRESHOLD_MM);
   side_max_mm = prefs.getFloat("side_max", DEFAULT_TOF_SIDE_MAX_MM);
-  left_motor_boost = prefs.getFloat("left_boost", DEFAULT_LEFT_MOTOR_BOOST);
   
   Serial.println("\n[Flash] Loaded tuning values:");
-  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f  LeftBoost=%.0f\n", Kp, Ki, Kd, base_speed, search_speed, left_motor_boost);
+  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f\n", Kp, Ki, Kd, base_speed, search_speed);
   Serial.printf("  Turn=%.0f mm  Collision=%.0f mm  OutLimit=%.0f mm\n", turn_threshold_mm, collision_threshold_mm, side_max_mm);
   
   // Initialize hardware
