@@ -13,7 +13,7 @@
     - IN3: 33 (RIGHT FWD)
     - IN4: 25 (RIGHT REV)
   
-  ToF & I2C:
+  ToF & I2C::
     - XSHUT LEFT: 4
     - XSHUT CENTER: 5
     - XSHUT RIGHT: 18
