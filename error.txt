@@ -1,18 +1,1611 @@
-Maze will be having physical walls
-Maze size - 8ft*8ft
-Track width is 23cm.
-Wall height will be maximum 10cm.
-Each team will get 3 runs, best of 3 will be taken for ranking.
-A total of 12 mins will be allotted for each team, where each attempt spanning 4 mins.
-Unlike conventional maze solvers , this competition will have only a single path from start to end , there will be no dead ends , decision based junctions etc, your bot must travel through the entire maze track in the shortest time possible without hitting or touching the walls.
-Track will be divided into 8 sections and there will be equal points for each section.
-If your bot hits a wall then points till the preceding section will be awarded.
-Speed will be the sole criteria of winning, ranking will be based on section points awarded and for same section points fastest bot will be placed higher in ranking.
-Bot must start at the designated starting point which will be the top left corner and finish at the finishing point which will be the bottom right corner.
-No human contact with bot once run begins — immediate disqualification 
-Once the competition run begins, the bot must operate fully autonomously without any human intervention. Remote or wireless control of any kind is strictly prohibited. 
-Teams may have the option of taking 10 mins of reprogramming time in between with penalty points applicable.
+# Debug maze solver code (2)
 
-All participating teams must have individual bots; no sharing of bots will be allowed.
-All scoring and penalty criteria will be shared 2 weeks before the competition.
-The decision of the organising committee shall be final and binding in all matters.
+> this is the curentcode of my maze solver , it has lot of errorsdebug
+>
+> User context
+>
+> Attachments:
+> - /* MAZE SOLVER ROBOT - COMPLETE DUAL-CORE SYSTEM Hardware: - 3x ToF sensors (fr…: `~/.codex/attachments/c5af8a75-462d-4433-abe7-6d77c7b67fdf/pasted-text.txt`
+
+<details><summary>17 previous messages</summary>
+
+> I’ll inspect the pasted source first, then I’ll make a corrected version in the workspace so you have a clean file to use rather than just a list of guesses.
+>
+> I found a 751-line ESP32/Arduino sketch. I’m reading the rest now and will focus on compile blockers first, then obvious runtime hazards like invalid sensor reads and motor PWM setup.
+>
+> The main structural issue is the WebSocket update path: the dashboard sends one value at a time, but the firmware parser expects commas for `kp/ki/kd`, so most slider updates can parse incorrectly. I’m also checking whether the current local environment can compile ESP32 sketches so I can validate instead of only editing by inspection.
+>
+> I don’t see `arduino-cli` installed here, so I can’t do a real board compile in this workspace. I’m still going to produce a cleaned sketch and keep the changes conservative: no new dependency like ArduinoJson, and ESP32 PWM support that works across common Arduino-ESP32 core versions.
+>
+> I’m editing the sketch now. The key fixes are: remove a likely bad include, add explicit ESP32 PWM setup for the motor pins, guard ToF reads when a sensor did not initialize, and replace the fragile string parser with a bounded JSON-number extractor.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./work/maze_solver_robot_fixed.ino` (+15 -2)
+>
+> </details>
+>
+> The first edit is in. I noticed one preprocessor guard should be more robust because the version macro may not exist until the version header is included, so I’m tightening that while adding the motor helper functions.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./work/maze_solver_robot_fixed.ino` (+28 -1)
+>
+> </details>
+>
+> I’m now making the hardware init and read loop tolerant of missing ToF sensors. Without that, a failed sensor init can still be read continuously later, which commonly causes bogus distances or I2C trouble.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./work/maze_solver_robot_fixed.ino` (+20 -11)
+> - Wrote `./work/maze_solver_robot_fixed.ino` (+8 -15)
+>
+> </details>
+>
+> Motor output now uses proper LEDC PWM instead of relying on `analogWrite`, which is a common ESP32 version mismatch. Next I’m fixing the WebSocket JSON handling so every slider can update independently without corrupting PID values.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./work/maze_solver_robot_fixed.ino` (+55 -22)
+>
+> </details>
+>
+> The parser fix is in. I’m doing a quick static scan now for remaining compile-risk items, especially ESPAsyncWebServer API names and any old `analogWrite` usage left behind.
+>
+> One definite compile error remains in the original: the route callbacks use `AsyncServerRequest`, but ESPAsyncWebServer’s request type is `AsyncWebServerRequest`. I’m patching that and making the dashboard avoid sending WebSocket messages before the connection opens.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./work/maze_solver_robot_fixed.ino` (+2 -2)
+> - Wrote `./work/maze_solver_robot_fixed.ino` (+3 -1)
+>
+> </details>
+>
+> The callback type issue is fixed. I’m doing one last scan against the original patterns and then I’ll put the corrected `.ino` into the outputs folder.
+>
+> The final scan no longer finds the bad request type, old `analogWrite`, fragile payload constructor, or the separate WebSocket include. I’m saving the corrected version as a user-facing output now.
+</details>
+
+I fixed the sketch and saved it here:
+
+[maze_solver_robot_fixed.ino](./outputs/maze_solver_robot_fixed.ino)
+
+Main fixes:
+- Removed likely-bad `#include <AsyncWebSocket.h>`.
+- Fixed ESPAsyncWebServer callback type: `AsyncWebServerRequest`.
+- Replaced ESP32 `analogWrite()` motor control with proper LEDC PWM.
+- Added ESP32 core 2.x / 3.x PWM compatibility.
+- Fixed WebSocket PID parsing so single slider messages like `{"kp":0.7}` work.
+- Prevented unsafe WebSocket payload string construction.
+- Added guards so failed ToF sensors are not read later.
+- Added WebSocket ready-state check before browser sends slider updates.
+
+I also kept the original copy here:
+
+[maze_solver_robot_original.ino](./outputs/maze_solver_robot_original.ino)
+
+I could not compile it locally because `arduino-cli` is not installed in this environment. In Arduino IDE, make sure you have these libraries installed: `ESPAsyncWebServer`, its async TCP dependency for ESP32, and `VL53L0X`.
+
+> remove the ir completly we are not using that only 3 tof and the motor pin oreer are 27,26,33,25
+
+<details><summary>10 previous messages</summary>
+
+> I’ll update the fixed sketch to remove the IR sensor path entirely and remap the motor pins to `27, 26, 33, 25` in that order. Then I’ll scan for leftover IR references so the file is clean.
+>
+> The current control loop used IR for both failsafe and centering PID, so removing IR means the PID needs a new error source. I’m switching centering to the left/right ToF difference: `right_tof_mm - left_tof_mm`, converted to cm-scale for the existing tuning values.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze_solver_robot_fixed.ino` (+5 -19)
+>
+> </details>
+>
+> The pin map is updated. I’m removing the IR init/read functions and simplifying the control loop so it only reads the three ToF sensors.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze_solver_robot_fixed.ino` (+13 -42)
+>
+> </details>
+>
+> IR code is removed from the control path. I’m cleaning the setup call and dashboard labels now so it doesn’t still talk about IR or cm-based side sensors.
+>
+> There’s one old `init_ir_sensors()` call still in `setup()`, which would break compile now that the function is gone. I’m removing that and changing the displayed telemetry label to match ToF-derived error.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze_solver_robot_fixed.ino` (+2 -3)
+>
+> </details>
+>
+> I’m running a final text scan for IR leftovers and the old motor pin `23`, then I’ll sync the workspace copy to the output file.
+>
+> The remaining search hits are just substrings inside `Wire`, the WiFi password, and CSS `rgba`; there are no actual IR symbols left. I’m copying this cleaned version back to the work file too so both copies match.
+</details>
+
+Done. Updated file:
+
+[maze_solver_robot_fixed.ino](./outputs/maze_solver_robot_fixed.ino)
+
+Changes made:
+- Removed IR completely: no IR pins, no `analogRead`, no IR init, no IR failsafe.
+- Motor pin order is now `27, 26, 33, 25`:
+  - `LEFT_MOTOR_FWD = 27`
+  - `LEFT_MOTOR_REV = 26`
+  - `RIGHT_MOTOR_FWD = 33`
+  - `RIGHT_MOTOR_REV = 25`
+- PID centering now uses the 3 ToF setup, with error from left/right ToF:
+  - `error = (tof_right_mm - tof_left_mm) / 10.0`
+- Dashboard label changed to `ToF Error`.
+
+I also scanned for old IR symbols and the old motor pin mapping; none remain. Still not compiled locally because `arduino-cli` is unavailable here.
+
+> User context
+>
+> Attachments:
+> - C:\Users\HP\Documents\Arduino\maze\maze.ino: In function 'void core1_web_server…: `~/.codex/attachments/3365b34c-4e1b-426b-ad2f-3a60ee11ec33/pasted-text.txt`
+
+<details><summary>3 previous messages</summary>
+
+> I’ll read the compiler output you attached and patch the sketch against the exact errors.
+>
+> That compiler log is for the old request type bug: `AsyncServerRequest` is wrong for your installed library; it must be `AsyncWebServerRequest`. I’m checking the current output file to make sure it already has the corrected type.
+>
+> The corrected file already uses `AsyncWebServerRequest`, so the compile log is from a copy that still has the old text. I’m creating a tiny patch note with the exact two-line replacement so you can fix `C:\\Users\\HP\\Documents\\Arduino\\maze\\maze.ino` if you pasted an older version there.
+</details>
+
+Your compile error is because your Arduino file still has this wrong type:
+
+```cpp
+AsyncServerRequest* request
+```
+
+Replace it in both routes with:
+
+```cpp
+AsyncWebServerRequest* request
+```
+
+Correct block:
+
+```cpp
+server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+  request->send(200, "text/html", get_html_dashboard());
+});
+
+server.on("/telemetry", HTTP_GET, [](AsyncWebServerRequest* request) {
+  String json = "{\"error\":" + String(telemetry_error, 2) +
+                ",\"pid_out\":" + String(telemetry_pid_output, 1) +
+                ",\"left_pwm\":" + String((int)telemetry_left_pwm) +
+                ",\"right_pwm\":" + String((int)telemetry_right_pwm) +
+                ",\"loop_count\":" + String(loop_count) + "}";
+  request->send(200, "application/json", json);
+});
+```
+
+The fixed file I made already has this correction:
+
+[maze_solver_robot_fixed.ino](./outputs/maze_solver_robot_fixed.ino)
+
+So easiest: replace your Windows `maze.ino` contents with this fixed file, or just make the two `AsyncWebServerRequest` replacements above.
+
+> User context
+>
+> Attachments:
+> - Skip to content agni-007 Maze-solver-bot Repository navigation Code Issues Pull…: `~/.codex/attachments/3a7e6c12-6672-4399-99a0-d8fd1eb848eb/pasted-text.txt`
+
+I’ll read the new pasted content and compare it with the current sketch so I can apply whatever change it’s asking for.
+
+> User context
+>
+> Attachments:
+> - C:\Users\HP\Documents\Arduino\maze\maze.ino:789:13: error: redefinition of 'con…: `~/.codex/attachments/95a371c6-04ec-41a4-b571-c3acb74554bf/pasted-text.txt`
+
+<details><summary>4 previous messages</summary>
+
+> I’ll read this latest compiler output and then adjust the deliverable so it’s harder to accidentally paste twice into Arduino.
+>
+> The error is not a code bug inside one function; your Windows `maze.ino` has the whole sketch duplicated. The compiler shows first copy around line 40 and second copy starting around line 789, so I’m making a clean Arduino-folder version you can replace the whole file with.
+>
+> The log now shows three copies pasted into the same file: first starts at line 1, second starts at line 789, third starts at line 1544. I’m preparing a proper `maze/maze.ino` folder copy so the fix is “replace the file”, not append more code.
+>
+> The clean file has only one `ssid`, one `setup()`, and one `loop()`. I’m copying that into an Arduino-style folder now.
+</details>
+
+The new error means your `maze.ino` has the full code pasted multiple times.
+
+Evidence from the log:
+- First copy: `ssid` at line `40`
+- Second copy: `ssid` again at line `789`
+- Third copy: `ssid` again at line `1544`
+
+So don’t paste the fixed code at the bottom. Open `C:\Users\HP\Documents\Arduino\maze\maze.ino`, press `Ctrl+A`, delete everything, then paste only one full copy.
+
+Use this clean Arduino-folder version:
+
+[outputs/maze/maze.ino](./outputs/maze/maze.ino)
+
+That clean file has only:
+- one `ssid`
+- one `setup()`
+- one `loop()`
+
+Your current compile error should disappear after replacing the entire file instead of appending.
+
+> code combiled sucess, give me live snsor values in the dashboard also to cross check, now the bot keeps moving not sensing and stopping
+
+<details><summary>13 previous messages</summary>
+
+> I’ll add the three ToF readings and sensor status into the dashboard telemetry, and I’ll harden the stop logic so a bad or missing front sensor does not let the robot drive blindly.
+>
+> Right now missing/timeout ToF readings get converted to `1000`, which looks like “far away,” so the robot can keep driving even when a sensor is not actually working. I’m changing that so sensor failures are visible in the dashboard and the motors stop instead of treating failures as clear space.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+5 -1)
+>
+> </details>
+>
+> I raised the front stop threshold from 80 mm to 150 mm and added validity flags for each ToF sensor. Next I’m updating the sensor read and control loop to use those flags.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+33 -10)
+>
+> </details>
+>
+> The robot will now stop on any ToF fault and show `TOF FAULT`, or stop in front of an obstacle and show `FRONT STOP`. I’m wiring those live values into the web dashboard and WebSocket JSON.
+>
+> I found the current dashboard only shows PID and motor PWM, no raw sensors. I’m adding `Left ToF`, `Center ToF`, `Right ToF`, and a robot status field so you can immediately see whether the sensor is reading `-1` fault or a real distance.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+21 -0)
+>
+> </details>
+>
+> The dashboard fields are in. I’m updating `/telemetry` and WebSocket broadcasts to send raw sensor readings, validity flags, and the stop/run status.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+15 -1)
+>
+> </details>
+>
+> The telemetry payload now includes raw ToF numbers and validity booleans. I’m syncing the other copies and scanning for syntax-sensitive JSON/string mistakes before I hand it back.
+>
+> One more safety adjustment: I’m keeping raw high ToF readings visible instead of treating every value above 1000 mm as a fault. A disconnected/timeout sensor still stops the bot, but an open path can show a large number instead of forcing a false fault.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+4 -3)
+>
+> </details>
+</details>
+
+Updated the code here:
+
+[outputs/maze/maze.ino](./outputs/maze/maze.ino)
+
+Changes:
+- Dashboard now shows live:
+  - `Left ToF (mm)`
+  - `Center ToF (mm)`
+  - `Right ToF (mm)`
+  - `Robot Status`
+- WebSocket and `/telemetry` now send raw ToF values.
+- Bot now stops if any ToF sensor is missing, timing out, or returning invalid data.
+- Bot now stops when center ToF is below `150 mm`.
+- Status will show:
+  - `RUN`
+  - `FRONT STOP`
+  - `TOF FAULT`
+
+If the dashboard shows `TOF FAULT`, check wiring/XSHUT/I2C address setup. If it shows high values like `1000+`, the sensor is reading open space or not seeing the wall clearly.
+
+> While the sensors is out of range the bot is stopping working
+> In that case move the bot forword until it gets trhe sensed value
+
+<details><summary>8 previous messages</summary>
+
+> I’ll change the safety logic so “out of range” is treated as open space/search mode, not a hard fault. Missing or timeout sensors can still stop the bot, but readings beyond range will drive forward slowly until real wall values come back.
+>
+> I found the exact behavior: the loop stops whenever any ToF is “not valid,” including out-of-range. I’m splitting that into “hardware fault” versus “no wall in range,” and using straight slow drive for the second case.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+33 -15)
+>
+> </details>
+>
+> The control loop now drives forward in `SEARCH FWD` mode when sensors are out of range, while real hardware faults still stop it. I’m updating the dashboard labels so out-of-range displays as `OUT` instead of `FAULT`.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+8 -4)
+>
+> </details>
+>
+> The dashboard will now distinguish `OUT` from `FAULT`. I’m adding those new fault flags to the JSON telemetry and syncing the other output copies.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+6 -0)
+>
+> </details>
+>
+> I’m doing a final scan for the modified logic and copying the updated sketch back to the main fixed file.
+</details>
+
+Updated:
+
+[outputs/maze/maze.ino](./outputs/maze/maze.ino)
+
+Behavior changed:
+- If a ToF sensor is connected but out of range, dashboard shows `OUT`.
+- In `OUT` state, bot moves forward slowly at `SEARCH_SPEED = 90`.
+- Status shows `SEARCH FWD`.
+- When real sensor values return, it goes back to normal `RUN`.
+- If a sensor is actually missing, timing out, or returning bad `<= 0`, it still stops with `TOF FAULT`.
+- Front obstacle stop still works when center ToF has a valid reading below `150 mm`.
+
+So now out-of-range does not freeze the bot; it creeps forward until the sensors get usable values.
+
+> C:\Users\HP\Documents\Arduino\maze\maze.ino: In function 'void core0_control_loop(void*)':
+> C:\Users\HP\Documents\Arduino\maze\maze.ino:341:43: error: no matching function for call to 'min(volatile float&, float)'
+>   341 |     float active_speed = search_mode ? min(base_speed, (float)SEARCH_SPEED) : base_speed;
+>       |                                        ~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+> In file included from C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/algorithm:61,
+>                  from C:\Users\HP\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.3.0\cores\esp32/Arduino.h:190,
+>                  from C:\Users\HP\AppData\Local\arduino\sketches\F0AEBBAFB5D04C8401F37B435D859B93\sketch\maze.ino.cpp:1:
+> C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algo.h:5695:5: note: candidate: 'template<class _Tp, class _Compare> constexpr _Tp std::min(initializer_list<_Tp>, _Compare)'
+>  5695 |     min(initializer_list<_Tp> __l, _Compare __comp)
+>       |     ^~~
+> C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algo.h:5695:5: note:   template argument deduction/substitution failed:
+> C:\Users\HP\Documents\Arduino\maze\maze.ino:341:43: note:   mismatched types 'std::initializer_list<_Tp>' and 'float'
+>   341 |     float active_speed = search_mode ? min(base_speed, (float)SEARCH_SPEED) : base_speed;
+>       |                                        ~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+> C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algo.h:5685:5: note: candidate: 'template<class _Tp> constexpr _Tp std::min(initializer_list<_Tp>)'
+>  5685 |     min(initializer_list<_Tp> __l)
+>       |     ^~~
+> C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algo.h:5685:5: note:   candidate expects 1 argument, 2 provided
+> In file included from C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/specfun.h:43,
+>                  from C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/cmath:3898,
+>                  from C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/math.h:36,
+>                  from C:\Users\HP\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.3.0\cores\esp32/esp32-hal.h:30,
+>                  from C:\Users\HP\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.3.0\cores\esp32/Arduino.h:44:
+> C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algobase.h:281:5: note: candidate: 'template<class _Tp, class _Compare> constexpr const _Tp& std::min(const _Tp&, const _Tp&, _Compare)'
+>   281 |     min(const _Tp& __a, const _Tp& __b, _Compare __comp)
+>       |     ^~~
+> C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algobase.h:281:5: note:   candidate expects 3 arguments, 2 provided
+> C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algobase.h:233:5: note: candidate: 'template<class _Tp> constexpr const _Tp& std::min(const _Tp&, const _Tp&)'
+>   233 |     min(const _Tp& __a, const _Tp& __b)
+>       |     ^~~
+> C:/Users/HP/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2411/xtensa-esp-elf/include/c++/14.2.0/bits/stl_algobase.h:233:5: note:   template argument deduction/substitution failed:
+> C:\Users\HP\Documents\Arduino\maze\maze.ino:341:43: note:   deduced conflicting types for parameter 'const _Tp' ('volatile float' and 'float')
+>   341 |     float active_speed = search_mode ? min(base_speed, (float)SEARCH_SPEED) : base_speed;
+>       |                                        ~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+> exit status 1
+>
+> Compilation error: no matching function for call to 'min(volatile float&, float)'
+
+<details><summary>4 previous messages</summary>
+
+> That’s a straightforward ESP32 core 3.x compile issue: `base_speed` is `volatile float`, so `min()` cannot infer one matching type. I’ll patch it by copying `base_speed` into a normal `float` before comparison.
+>
+> I found only one `min()` usage, so this patch is small.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+5 -1)
+>
+> </details>
+>
+> The `min()` compile problem is removed. I’m syncing the duplicate output files and doing a quick scan so you can paste the current one.
+</details>
+
+Fixed that compile error.
+
+Updated file:
+
+[outputs/maze/maze.ino](./outputs/maze/maze.ino)
+
+I replaced this:
+
+```cpp
+float active_speed = search_mode ? min(base_speed, (float)SEARCH_SPEED) : base_speed;
+```
+
+with this ESP32-safe version:
+
+```cpp
+float current_base_speed = base_speed;
+float active_speed = current_base_speed;
+if (search_mode && active_speed > SEARCH_SPEED) {
+  active_speed = SEARCH_SPEED;
+}
+```
+
+Reason: `base_speed` is `volatile float`, and ESP32 Arduino core 3.3.0’s C++ compiler rejects `min(volatile float, float)`.
+
+> give me controlls in dashbord for search speed,turn threshold,collision threshold,etc..
+
+<details><summary>18 previous messages</summary>
+
+> I’ll add dashboard sliders for the runtime thresholds and wire them through WebSocket plus Preferences, the same way PID and base speed work now.
+>
+> I’m converting the fixed threshold macros into live variables, then I’ll expose each one on the dashboard and telemetry.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+8 -4)
+>
+> </details>
+>
+> The live tunables are declared. I’m replacing internal uses of the old constants with the new variables, taking local snapshots so ESP32 avoids volatile template issues.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+10 -6)
+>
+> </details>
+>
+> The control loop is now using live `turn_threshold_mm`, `collision_threshold_mm`, `side_max_mm`, and `search_speed`. I’m patching the sensor validity and parser/persistence next.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+4 -0)
+> - Wrote `./outputs/maze/maze.ino` (+22 -1)
+>
+> </details>
+>
+> WebSocket updates now accept `search`, `turn`, `collision`, and `side_max`, and save them to flash. I’m adding sliders for those controls and making dashboard startup values reflect saved firmware values.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+34 -1)
+>
+> </details>
+>
+> The dashboard controls are in. I’m extending telemetry JSON so the browser can show saved/current values after refresh, then I’ll load the new values from Preferences in `setup()`.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+16 -0)
+>
+> </details>
+>
+> The telemetry now sends the current slider values too. I’m patching startup loading and serial output for those new tunables.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+7 -2)
+>
+> </details>
+>
+> I spotted one UI detail: the new integer sliders would display decimals while dragging. I’m tightening that and then syncing the final output copies.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+0 -0)
+>
+> </details>
+>
+> That patch hit the line but didn’t change the expression; I’m correcting it properly.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+2 -1)
+>
+> </details>
+>
+> The UI display is fixed. I’m syncing and doing one final scan for the new controls.
+</details>
+
+Updated the dashboard controls in:
+
+[outputs/maze/maze.ino](./outputs/maze/maze.ino)
+
+Added sliders for:
+- `Search Speed`
+- `Turn Threshold`
+- `Collision Threshold`
+- `Out-of-Range Limit`
+
+They now:
+- update live over WebSocket
+- save to flash using `Preferences`
+- reload after reboot
+- appear in telemetry so the dashboard syncs to saved/current values
+
+Ranges:
+- Search Speed: `0-255`
+- Turn Threshold: `30-600 mm`
+- Collision Threshold: `30-600 mm`
+- Out-of-Range Limit: `100-2000 mm`
+
+> Maze will be having physical walls
+> Maze size - 8ft*8ft
+> Track width is 23cm.
+> Wall height will be maximum 10cm.
+> Each team will get 3 runs, best of 3 will be taken for ranking.
+> A total of 12 mins will be allotted for each team, where each attempt spanning 4 mins.
+> Unlike conventional maze solvers , this competition will have only a single path from start to end , there will be no dead ends , decision based junctions etc, your bot must travel through the entire maze track in the shortest time possible without hitting or touching the walls.
+> Track will be divided into 8 sections and there will be equal points for each section.
+> If your bot hits a wall then points till the preceding section will be awarded.
+> Speed will be the sole criteria of winning, ranking will be based on section points awarded and for same section points fastest bot will be placed higher in ranking.
+> Bot must start at the designated starting point which will be the top left corner and finish at the finishing point which will be the bottom right corner.
+> No human contact with bot once run begins — immediate disqualification
+> Once the competition run begins, the bot must operate fully autonomously without any human intervention. Remote or wireless control of any kind is strictly prohibited.
+> Teams may have the option of taking 10 mins of reprogramming time in between with penalty points applicable.
+>
+> All participating teams must have individual bots; no sharing of bots will be allowed.
+> All scoring and penalty criteria will be shared 2 weeks before the competition.
+> The decision of the organising committee shall be final and binding in all matters. also the
+
+<details><summary>3 previous messages</summary>
+
+> I’ll adapt the sketch for this competition format: keep dashboard tuning for practice, but add a compile-time competition mode that disables WiFi/dashboard during official runs so it is fully autonomous and not disqualified for wireless control.
+>
+> I’m adding a simple `COMPETITION_MODE` switch near the top. When set to `1`, it will turn WiFi off and skip the web-server task; when `0`, dashboard tuning stays available for practice.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+5 -0)
+>
+> </details>
+</details>
+
+Next I’m making setup conditionally start the dashboard only in practice mode, and explicitly disable WiFi for official mode.
+
+> no wait dont change the wifi settings npow i gave u that msg to know the tracl limts for calibratin and speed
+
+<details><summary>8 previous messages</summary>
+
+> Got it. I’ll leave WiFi/dashboard behavior unchanged. I’m removing the partial competition-mode defines I had just added, then I’ll only tune the maze calibration defaults/ranges based on the 23 cm track.
+>
+> I found only the two WiFi-related competition defines were added, and setup was not changed yet. I’m removing those and adjusting only the default calibration numbers.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+5 -10)
+>
+> </details>
+>
+> Defaults are now more appropriate for a 23 cm track and physical walls: earlier turn detection, less last-second stopping, and a slightly faster search/base speed. I’m also updating the dashboard default slider values and startup fallback values to match.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+10 -10)
+>
+> </details>
+>
+> I’m updating the flash fallback for base speed and adding a short comment near the defaults so the track-limit reasoning is kept in the code without touching WiFi.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+3 -2)
+>
+> </details>
+>
+> The code now keeps WiFi untouched and just uses better track defaults. I’m syncing the other output copies and verifying no competition-mode leftovers remain.
+</details>
+
+Understood. I removed the WiFi/competition-mode change. WiFi/dashboard behavior is unchanged.
+
+I only updated calibration defaults for your track:
+
+[outputs/maze/maze.ino](./outputs/maze/maze.ino)
+
+New defaults:
+- Base speed: `170`
+- Search speed: `110`
+- Turn threshold: `280 mm`
+- Collision threshold: `170 mm`
+- Out-of-range limit: `1200 mm`
+
+Important: if the ESP32 already has old values saved in flash, it will reload those old dashboard values. To use these defaults, either adjust them manually from the dashboard once, or clear Preferences/flash. The dashboard sliders still let you tune live.
+
+> as said above 23 cm is the track width , out bot is 14*10 cm  with the center tof on the front left and right tof at a distance of 2.5 cms displacemnt , on neither side tilted at about 45 degree (not acurate), tune
+
+<details><summary>14 previous messages</summary>
+
+> I’ll tune the defaults for your actual geometry: 23 cm lane, 14 cm bot width, side ToFs about 2.5 cm off center and angled around 45 degrees. I’ll keep WiFi/dashboard unchanged and only adjust control constants plus add comments so you know what each value is based on.
+>
+> Given your geometry, equal left/right readings matter more than an absolute side target because the side ToFs are angled and not perfectly calibrated. I’m tuning the defaults and also fixing one control issue: a front sensor out-of-range should not slow the bot if side sensors are still seeing the walls.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+13 -10)
+>
+> </details>
+>
+> I set side out-of-range much tighter because your side sensors should normally read around 125-140 mm when centered. Now I’m preventing only the center-front “far away” condition from forcing slow search mode.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+1 -1)
+>
+> </details>
+>
+> The search mode now depends on side-wall loss, not front distance being far. I’m updating dashboard defaults and saved-value fallbacks to match the new geometry tune.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+16 -16)
+>
+> </details>
+>
+> Dashboard defaults now match the geometry tune. I’m patching boot fallback values so fresh flash uses the same tune.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+4 -4)
+>
+> </details>
+>
+> I’m also adding one telemetry field to show the computed expected centered side reading, so when you test you can compare left/right ToF against the target range.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+1 -0)
+> - Wrote `./outputs/maze/maze.ino` (+5 -0)
+>
+> </details>
+>
+> The dashboard will show a `Centered Side Target` of about 130 mm. I’m adding that into the telemetry JSON and syncing final files.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+2 -0)
+>
+> </details>
+>
+> I’m doing the final scan now: checking defaults, search-mode logic, and no WiFi changes.
+</details>
+
+Tuned for your stated geometry and kept WiFi/dashboard unchanged.
+
+Updated file:
+
+[outputs/maze/maze.ino](./outputs/maze/maze.ino)
+
+New defaults:
+- `Kp = 1.2`
+- `Ki = 0.0`
+- `Kd = 0.8`
+- Base speed: `180`
+- Search speed: `125`
+- Turn threshold: `260 mm`
+- Collision threshold: `140 mm`
+- Out-of-range limit: `450 mm`
+
+Geometry assumption added:
+- Track width: `230 mm`
+- Bot width: `140 mm`
+- Side clearance when centered: about `45 mm` each side
+- Side ToF offset: about `25 mm` from center
+- Side ToF angle: about `45 deg`
+- Expected centered side ToF reading: about `130 mm`
+
+Dashboard now also shows `Centered Side Target = 130`, so while testing, left/right ToF should be roughly near that and close to each other when the bot is centered.
+
+I also changed search mode so the bot does not slow down just because the front/center ToF is out of range. It only enters `SEARCH FWD` when left or right side wall reading is out of range.
+
+> how to tune this coustom values including pid values , give me senarios and exampls
+
+Here is a practical tuning method for your bot.
+
+**Start Values**
+Use these as baseline:
+
+```text
+Kp = 1.2
+Ki = 0.0
+Kd = 0.8
+Base speed = 120 first, then increase
+Search speed = 90-110
+Turn threshold = 260 mm
+Collision threshold = 140 mm
+Out-of-range limit = 450 mm
+```
+
+Do not start testing at high speed. First make it stable at `Base speed = 100-120`.
+
+**What Each Value Does**
+`Kp`: how strongly bot corrects left/right error.
+Higher = sharper correction. Too high = zigzag.
+
+`Ki`: long-term correction.
+For your maze, keep this `0.0` usually. It can cause drift buildup and sudden turns.
+
+`Kd`: damping.
+Higher = smoother, reduces oscillation. Too high = slow or twitchy response.
+
+`Base speed`: normal running speed.
+
+`Search speed`: speed when side wall is out of range.
+
+`Turn threshold`: front distance where bot prepares to turn.
+
+`Collision threshold`: emergency stop distance.
+
+`Out-of-range limit`: side ToF value above this is treated as `OUT`.
+
+**Scenario 1: Bot Zigzags Left-Right**
+Symptoms:
+- Left/right PWM keeps jumping.
+- Bot snakes through straight track.
+
+Change:
+```text
+Decrease Kp by 0.2
+OR increase Kd by 0.2
+```
+
+Example:
+```text
+Kp 1.2 -> 1.0
+Kd 0.8 -> 1.0
+```
+
+**Scenario 2: Bot Slowly Drifts Into Wall**
+Symptoms:
+- Bot does not correct fast enough.
+- It leans toward one wall.
+
+Change:
+```text
+Increase Kp by 0.2
+```
+
+Example:
+```text
+Kp 1.2 -> 1.4
+```
+
+If it starts zigzagging after this, reduce speed or increase `Kd`.
+
+**Scenario 3: Bot Reacts Too Late Before Turn**
+Symptoms:
+- Front wall appears.
+- Bot reaches too close before turning/stopping.
+
+Change:
+```text
+Increase Turn Threshold
+Increase Collision Threshold slightly
+```
+
+Example:
+```text
+Turn threshold 260 -> 300
+Collision threshold 140 -> 160
+```
+
+**Scenario 4: Bot Turns Too Early**
+Symptoms:
+- It slows/turns before actually reaching bend.
+- It becomes hesitant.
+
+Change:
+```text
+Decrease Turn Threshold
+```
+
+Example:
+```text
+Turn threshold 260 -> 220
+```
+
+**Scenario 5: Bot Stops Too Often**
+Symptoms:
+- Dashboard shows `FRONT STOP` even when there is enough space.
+
+Change:
+```text
+Decrease Collision Threshold
+```
+
+Example:
+```text
+Collision threshold 140 -> 110
+```
+
+But do not go too low. For a fast bot, keep at least `120-150 mm`.
+
+**Scenario 6: Dashboard Shows OUT Too Often**
+Symptoms:
+- Left or right ToF shows `OUT`.
+- Bot enters `SEARCH FWD`.
+
+Change:
+```text
+Increase Out-of-range limit
+```
+
+Example:
+```text
+Out-of-range limit 450 -> 600
+```
+
+For your geometry, centered side readings may be around `130 mm`, but angled sensors can jump high. Try `450`, `600`, `800`.
+
+**Scenario 7: Bot Runs Stable But Too Slow**
+Only after stable driving:
+
+```text
+Increase Base speed by 10 or 15
+```
+
+Example:
+```text
+120 -> 135 -> 150 -> 165 -> 180
+```
+
+After every speed increase, retune:
+```text
+Increase Kd slightly
+Increase Turn threshold slightly
+```
+
+Fast speed usually needs earlier turning and more damping.
+
+**Good Test Order**
+1. Put bot in straight 23 cm track.
+2. Set:
+```text
+Base speed = 110
+Kp = 1.0
+Ki = 0.0
+Kd = 0.8
+```
+3. Check left/right ToF values.
+4. When centered, left and right should be close, not necessarily exactly `130`.
+5. If stable, increase speed.
+6. Test curved/turn section.
+7. Tune turn threshold.
+8. Increase speed again.
+
+**Recommended Tuning Table**
+Try this sequence:
+
+```text
+Safe test:
+Base 110, Search 90, Kp 1.0, Ki 0.0, Kd 0.8
+
+Medium:
+Base 150, Search 110, Kp 1.2, Ki 0.0, Kd 1.0
+
+Fast:
+Base 180, Search 125, Kp 1.4, Ki 0.0, Kd 1.2
+
+Very fast:
+Base 210, Search 140, Kp 1.6, Ki 0.0, Kd 1.5
+```
+
+**Most Important Rule**
+Tune in this order:
+
+```text
+1. Sensor readings
+2. Kp
+3. Kd
+4. Turn threshold
+5. Base speed
+```
+
+Keep `Ki = 0.0` unless the bot consistently stays offset to one side even after Kp/Kd tuning.
+
+> the pwm of both wheels are not matching, due to this, it is automatically curving
+> will it solve by chganging #define MOTOR_PWM_RESOLUTION 8 to 10
+> any other method to solve it and why it is happenning
+
+<details><summary>14 previous messages</summary>
+
+> Changing PWM resolution from `8` to `10` will not solve this in your current code. With 10-bit LEDC, duty range becomes `0-1023`, but the code still writes `0-255`, so your motors would only get about 25% max duty unless all PWM math is rescaled. I’ll add a proper dashboard `Straight Trim` control instead, which is the right first fix for unequal motors.
+>
+> The code currently assumes equal motors and only corrects from sensor error. I’m adding a saved `Straight Trim` slider that biases the differential drive even when sensor error is zero.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+1 -0)
+>
+> </details>
+>
+> I’m applying the trim after PID steering so it directly counters mechanical motor mismatch. Positive trim will steer right; negative trim will steer left.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+2 -1)
+>
+> </details>
+>
+> Now I’m wiring `trim` through WebSocket, flash storage, and the serial tuning log.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+7 -2)
+>
+> </details>
+>
+> Next I’m adding the dashboard control and telemetry sync for `Straight Trim`.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+8 -2)
+>
+> </details>
+>
+> The dashboard has the trim slider. I’m adding the trim value to the JSON telemetry so refreshes show the saved value.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+2 -0)
+>
+> </details>
+>
+> Finally I’m loading trim from flash at boot and syncing the edited output copies.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+2 -1)
+>
+> </details>
+>
+> I’m doing a final scan for the trim wiring and syncing the main fixed file.
+</details>
+
+No, changing `MOTOR_PWM_RESOLUTION` from `8` to `10` will not fix unequal wheel speed.
+
+In your current code, PWM values are `0-255`. With `8-bit` resolution, that is correct. If you change to `10-bit`, the valid range becomes `0-1023`, but your code still sends only `0-255`, so max power becomes about 25%. It may make the bot weaker, not straighter.
+
+I added the better fix: `Straight Trim` in the dashboard.
+
+Updated file:
+
+[outputs/maze/maze.ino](./outputs/maze/maze.ino)
+
+Use it like this:
+- If bot curves right, set `Straight Trim` negative, like `-5`, `-10`, `-15`.
+- If bot curves left, set `Straight Trim` positive, like `+5`, `+10`, `+15`.
+- Tune on a straight section with `Kp = 0` temporarily if you want to measure pure motor imbalance.
+
+Why it happens:
+- N20 motors are not identical, even with same PWM.
+- Gearbox friction differs.
+- Wheel diameter/grip may differ.
+- Weight distribution may load one wheel more.
+- DRV8833 channels can have slightly different voltage drop.
+- Battery voltage sag affects both motors unevenly under load.
+- Floor friction and wheel alignment also matter.
+
+Best fixes, in order:
+1. Dashboard `Straight Trim` for quick calibration.
+2. Mechanically align wheels and chassis.
+3. Use same wheel diameter and tire grip.
+4. Add wheel encoders for true closed-loop speed control.
+
+PWM resolution helps only with smoothness/fine control, not with motor mismatch by itself.
+
+<details><summary>1 previous message</summary>
+
+> Context compaction
+>
+> Source: automatic
+> Status: completed
+</details>
+
+Understood. Current ToF layout is:
+
+- Left sensor: `-45°`
+- Center sensor: `0°`
+- Right sensor: `+45°`
+- Side sensors displaced approximately `2.5 cm` from the robot center.
+
+For a `23 cm` track and `14 cm` robot width, the side clearance when centered is about:
+
+```text
+(23 - 14) / 2 = 4.5 cm
+```
+
+At `45°`, each angled ToF should theoretically measure:
+
+```text
+4.5 / cos(45°) ≈ 6.4 cm ≈ 64 mm
+```
+
+Therefore, the current `EXPECTED_CENTER_SIDE_READING_MM 130` is too high if the robot is truly 14 cm wide. A better initial target is approximately `65 mm`.
+
+However, steering should primarily use the difference between left and right readings. Put the robot physically in the center, observe both dashboard readings, and use their actual average as the calibrated centered target. The sensor angle and mounting tolerances can shift it considerably.
+
+> the wifi dashbord was not updting sincse the last push ie last code check
+
+<details><summary>5 previous messages</summary>
+
+> I’ll trace the dashboard update path in the current sketch, especially the WebSocket telemetry loop and the last tuning changes. I’ll fix the sketch directly and keep all three copies synchronized.
+>
+> The sensor/control telemetry is still being produced, but the browser update path is fragile: it opens the WebSocket only once, has no polling fallback, and never cleans stale clients. A brief WiFi drop or page load race leaves the dashboard permanently connected to nothing until a manual reload. I’m replacing that path with automatic reconnect plus `/telemetry` fallback polling, and reducing broadcast pressure on the ESP32.
+>
+> I’m also removing the dashboard’s dependency on the internet-hosted Chart.js file. On a robot network, that external script can delay the entire dashboard JavaScript, so even a healthy ESP32 WebSocket can appear frozen. The chart will use the browser’s built-in canvas instead, while telemetry reconnects automatically and polls as a backup.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+131 -106)
+>
+> </details>
+>
+> The patched browser code now passes a JavaScript syntax check. The ESP32 side sends an immediate snapshot on connection, broadcasts at 10 Hz, clears stale clients, and serves uncached telemetry; I’m synchronizing the clean sketch copies and doing a final consistency check now.
+</details>
+
+Fixed the dashboard update failure in [maze.ino](./outputs/maze/maze.ino).
+
+Changes:
+
+- WebSocket automatically reconnects after WiFi interruptions.
+- `/telemetry` polling acts as a fallback.
+- Removed internet-dependent Chart.js.
+- Added stale WebSocket client cleanup.
+- Reduced telemetry broadcast to a stable 10 Hz.
+- Disabled browser caching for dashboard data.
+- Corrected sensor labels to `-45°`, `0°`, `+45°`.
+- Synchronized all three sketch copies.
+
+Upload the new sketch, then refresh the dashboard. It should show either `Connected - live` or `Connected - polling`. You can directly check `http://ESP32-IP/telemetry`; the values and `loop_count` should continuously change.
+
+Dashboard JavaScript passed syntax validation. I could not run an Arduino compile because `arduino-cli` is unavailable here.
+
+> cant we do like esp acting as a server and devises conncting to it dirs lty and assesing th e dashborerd intsed of a middel wifi router and complex websiocket codes , does this make tyhe code lighter if so di that , also ive observed that inherently the left motor is spinning a little slowert than the rignht oine causing it to drift slightly whing gooins forward
+
+<details><summary>5 previous messages</summary>
+
+> I’ll switch the ESP32 to access-point mode so the phone/laptop connects directly to the robot at `192.168.4.1`. I’ll also remove WebSockets entirely, use lightweight HTTP telemetry/tuning requests, and make the left-motor correction explicit so the slower left wheel can be compensated without disturbing PID tuning.
+>
+> The cleanest motor correction here is a separate `Left Motor Boost`, not a hidden PID offset. I’ll default it to `+8 PWM`, apply it only to the left motor, expose it on the dashboard, and store it independently in flash; this keeps wall-centering PID responsible only for steering.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+8 -9)
+> - Wrote `./outputs/maze/maze.ino` (+34 -100)
+> - Wrote `./outputs/maze/maze.ino` (+21 -42)
+> - Wrote `./outputs/maze/maze.ino` (+28 -38)
+>
+> </details>
+>
+> The WebSocket code is now fully gone, and the dashboard uses one small JSON request every 200 ms plus debounced HTTP tuning updates. The source is about 100 lines shorter, and unused WebSocket code should also be removed by the linker; I’m fixing the AP address explicitly to `192.168.4.1` and then syncing/verifying the deliverable.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+3 -0)
+>
+> </details>
+</details>
+
+Implemented in [maze.ino](./outputs/maze/maze.ino).
+
+Connect directly:
+
+- WiFi: `MazeRobot`
+- Password: `maze1234`
+- Dashboard: `http://192.168.4.1`
+- No router or internet required.
+- The phone may report “No internet”; remain connected.
+
+WebSockets were completely removed. Telemetry now uses lightweight HTTP polling at 5 Hz, and slider updates use debounced HTTP requests. The sketch is about 95 lines shorter.
+
+For the slower left motor, I added `Left Motor Boost`, defaulting to `+8 PWM`:
+
+- Still drifting toward the left: increase it gradually, for example `8 → 12 → 16`.
+- Starts drifting toward the right: reduce it.
+- This correction is saved in flash and is independent of PID steering.
+
+The JavaScript passed syntax validation and all sketch copies are synchronized. Arduino compilation could not be run locally because `arduino-cli` is unavailable.
+
+Important: the ESP32 now broadcasts WiFi continuously. Since the competition rules prohibit wireless control during a run, confirm whether merely broadcasting an access point is permitted, even when nobody is connected.
+
+> the wifi keeps on disconnecting  and the dashbord is a bit laggyn , also no hardware issue in mototrs ,a as ni can see in the dashboard the input pwm fotr the rtight and left is having a mismath, during serch correct it
+
+<details><summary>6 previous messages</summary>
+
+> I’ll remove the motor boost because the PWM mismatch is being created by software, not the motors. In `SEARCH FWD`, I’ll force both motor commands to exactly the same PWM and suppress partial-sensor turning; I’ll also reduce dashboard load and harden the direct access point against power-saving disconnects.
+>
+> The mismatch is confirmed in the current code: `left_motor_boost` adds `+8` only to the left command, and search mode can also inherit a turn signal from one valid side sensor. I’m removing both causes so `SEARCH FWD` always reports and outputs identical left/right PWM.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+19 -52)
+>
+> </details>
+>
+> The direct AP is now configured with WiFi sleep disabled, a fixed channel, and at most two clients. I’m adding a small captive-portal DNS handler as well; this helps phones recognize the robot network instead of repeatedly abandoning it because it has no internet access.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+9 -9)
+>
+> </details>
+>
+> The control path now guarantees equality during search: `error = 0`, PID history is reset, turn assist is disabled, and both motors receive the same constrained search-speed value. The dashboard chart and overlapping requests are also removed, so only two telemetry requests per second remain.
+</details>
+
+Fixed in [maze.ino](./outputs/maze/maze.ino).
+
+- Removed `Left Motor Boost` completely.
+- In `SEARCH FWD`, left and right PWM are now guaranteed equal.
+- Partial sensor readings cannot trigger turning during search.
+- PID history resets during search to prevent leftover steering.
+- Dashboard polling reduced from 5 Hz to 2 Hz.
+- Removed the live chart and prevented overlapping HTTP requests.
+- Disabled ESP32 WiFi sleep.
+- Fixed AP to channel 6 with two clients maximum.
+- Added captive-portal DNS to help phones remain connected.
+
+During normal `RUN`, different PWM values are expected because PID is steering. During `SEARCH FWD`, they should match exactly.
+
+Upload the new sketch and reconnect to `MazeRobot`. If the phone still switches away, disable “switch to mobile data automatically” for this WiFi network because it has no internet.
+
+JavaScript validation passed; all sketch copies are synchronized. Arduino compilation remains untested locally because `arduino-cli` is unavailable.
+
+> doues the battrey dgrading  lead to wifi sidisconnectioj , i mean current getting low , voltage is constenbt since we use a buck converter
+
+Yes. A degraded battery can cause WiFi disconnections even when a multimeter shows constant buck-converter output voltage.
+
+The battery does not normally “send less current.” Instead, its internal resistance increases. When the ESP32 transmits WiFi or the motors accelerate, current demand rises briefly, causing a very short voltage dip. A multimeter may miss these millisecond dips, but the ESP32 can brown out, reset, or lose WiFi.
+
+Check these signs:
+
+- `MazeRobot` network disappears and returns: ESP32 likely reset/browned out.
+- Serial monitor prints `Brownout detector was triggered` or startup messages again: confirmed power problem.
+- WiFi remains visible but dashboard stops: more likely software/network congestion.
+- Problem becomes worse when motors start: electrical noise or supply sag.
+
+Recommended power improvements:
+
+- Use a buck converter rated for at least `2 A`, preferably `3 A`.
+- Add `470–1000 µF` electrolytic plus `0.1 µF` ceramic near the ESP32 supply.
+- Keep motor power wiring separate from ESP32 wiring as far as possible.
+- Connect grounds at one solid common point.
+- Add `100 nF` ceramic capacitors across each motor terminal.
+- Avoid powering motors through the ESP32 regulator.
+- Test with motors disconnected. If WiFi becomes stable, power sag/noise is the cause.
+
+A buck converter maintains voltage only while its input voltage and current capacity remain sufficient. It cannot compensate when an aged battery sags below its operating margin.
+
+> my buck converter is oupting 5 volt to esp vin
+
+`5 V` into the ESP32 `VIN/5V` pin is correct. The board’s regulator then converts it to `3.3 V`.
+
+But measure both:
+
+- Buck output: `5V` to `GND`
+- ESP32 `3V3` pin to `GND`
+
+The buck may show steady `5 V` while the ESP32’s onboard `3.3 V` rail briefly drops during WiFi transmission. A normal multimeter may not detect these fast drops.
+
+Recommended setup:
+
+- Buck converter capacity: at least `1 A`; preferably `2 A`.
+- Add `470–1000 µF` electrolytic capacitor between ESP32 `VIN` and `GND`.
+- Add a `0.1 µF` ceramic capacitor near the ESP32 power pins.
+- Power motors from the battery/motor supply, not through ESP32 `VIN`.
+- Keep a common ground between ESP32, motor driver, sensors, and battery.
+- Ensure the battery voltage remains sufficiently above `5 V` under motor load.
+
+Watch the Serial Monitor at `115200`. If startup messages repeat or it prints `Brownout detector was triggered`, the ESP32 is losing power momentarily. If the ESP32 stays running but only the phone disconnects, the likely cause is the phone abandoning the WiFi network because it has no internet.
+
+> wifi kkeps on disconnecting even when the bot is running , also the. sensors seem to frees sometime , i dont know mabey its the dasboard freesing , but stil not turn9ing properly as intended
+
+<details><summary>8 previous messages</summary>
+
+> There are two concrete control bugs to fix. The VL53L0X library currently has no read timeout, so one stalled sensor can block the entire control task indefinitely; and the “equal PWM during search” rule also prevents corner detection when one 45° sensor sees open space. I’ll separate `SEARCH FWD` from `TURN LEFT/RIGHT`, add bounded ToF reads, and expose uptime/control counters so we can tell a sensor freeze from a dashboard or ESP reset.
+>
+> <details><summary>Explored a file, a search</summary>
+>
+> - Searched for `VL53L0X|setTimeout|startContinuous|TURN|SEARCH FWD|FRONT STOP|build_telemetry|loop_count|softAP|getStationNum|pollTelemetry|Turn Threshold|status` in `maze.ino`
+> - Read `./outputs/maze/maze.ino`
+>
+> </details>
+>
+> I’m changing corner handling so an out-of-range side sensor means “open turn direction” only when the front sensor is inside the turn zone. Away from a corner it remains `SEARCH FWD` with equal PWM; near a corner it becomes an explicit `TURN LEFT` or `TURN RIGHT`, with collision stopping suppressed only while that valid turn is active.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+30 -13)
+> - Wrote `./outputs/maze/maze.ino` (+42 -4)
+>
+> </details>
+>
+> A turn also needs short persistence; otherwise the center sensor clears the wall partway through the rotation and cancels the turn too early. I’m latching the selected direction for at least 250 ms, releasing it when the front clears, with a 1.2-second safety timeout so it cannot remain stuck turning.
+>
+> <details><summary>Edited a file, explored a file, a search, ran a command</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+27 -8)
+>
+> - Wrote `./outputs/maze/maze.ino` (+19 -0)
+>
+> <details><summary>Explored a file, a search</summary>
+>
+> - Read `./outputs/maze/maze.ino`
+> - Searched for `turn_strength|turn_power|TURN_MIN|TURN_MAX|active_turn|setTimeout\(|setMeasurementTimingBudget|startContinuous\(|sensor_age|tof_timeouts|control-hz|wifi_clients|softAP\(` in `maze.ino`
+>
+> </details>
+>
+> - Ran `node -e 'const fs=require("fs"); const s=fs.readFileSync("outputs/maze/maze.ino","utf8"); const m=s.match(/R"rawliteral\(([\s\S]*?)\)rawliteral"/); if(!m) throw Error("dashboard missing"); for(const x of m[1].matchAll(/<script>([\s\S]*?)<\/script>/g))new Function(x[1]); console.log("dashboard JavaScript syntax OK");'`
+>
+> </details>
+>
+> The new dashboard diagnostics make the failure distinguishable: rising `Sensor Update Age` with WiFi still connected means the ToF/control task stalled; increasing `ToF Timeouts` identifies bus/sensor failures; uptime resetting means the ESP32 rebooted from power or brownout; only the dashboard disconnecting while uptime continues points to the phone/AP link.
+>
+> <details><summary>Edited a file, ran a command</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+1 -1)
+> - Ran `cp outputs/maze/maze.ino outputs/maze_solver_robot_fixed.ino
+> cp outputs/maze/maze.ino work/maze_solver_robot_fixed.ino
+> cmp outputs/maze/maze.ino outputs/maze_solver_robot_fixed.ino
+> cmp outputs/maze/maze.ino work/maze_solver_robot_fixed.ino
+> node -e 'const fs=require("fs"); const s=fs.readFileSync("outputs/maze/maze.ino","utf8"); const h=s.match(/R"rawliteral\(([\s\S]*?)\)rawliteral"/)[1]; for(const x of h.matchAll(/<script>([\s\S]*?)<\/script>/g))new Function(x[1]); console.log("dashboard JavaScript syntax OK");'
+> rg -n "setTimeout\(TOF|setMeasurementTimingBudget|TURN RIGHT|TURN LEFT|TURN_MIN_DURATION|turn_strength|sensor_age_ms|tof_timeouts|uptime_s|wifi_clients|softAP\(" outputs/maze/maze.ino
+> wc -l outputs/maze/maze.ino
+> command -v arduino-cli || true`
+>
+> </details>
+</details>
+
+Updated [maze.ino](./outputs/maze/maze.ino) to address all three problems.
+
+Key fixes:
+
+- Added `40 ms` timeout to every ToF sensor so one sensor cannot freeze the control task indefinitely.
+- `SEARCH FWD` still produces equal left/right PWM.
+- Near an obstacle, an out-of-range side sensor is now treated as the open turning direction.
+- Added explicit `TURN LEFT` and `TURN RIGHT` states.
+- Turns remain active for at least `250 ms`, with a `1.2 s` safety timeout.
+- Added dashboard `Turn Strength`, default `90`.
+- Increased direct AP capacity to four clients.
+
+New dashboard diagnostics:
+
+- `Control Loop`: normally approximately `35–50 Hz`.
+- `Sensor Update Age`: normally below roughly `100 ms`.
+- `ToF Timeouts`: should remain `0`.
+- `ESP Uptime`: if this resets, the ESP32 rebooted or browned out.
+- `WiFi Clients`: confirms whether the phone is still associated.
+
+During `TURN LEFT/RIGHT`, PWM mismatch is intentional. During `SEARCH FWD`, both PWM values must match.
+
+Start with:
+
+```text
+Turn Threshold: 260 mm
+Collision Threshold: 140 mm
+Turn Strength: 90
+Search Speed: 125
+```
+
+If it starts turning but cannot complete the corner, raise Turn Strength to `105`, then `120`. All copies are synchronized and dashboard JavaScript validation passed. Local Arduino compilation remains unavailable.
+
+> this lastcode is working almost right comnpared to the previous ones norte in mind , still need to calibrate a lot , im new to pid tuning , walk me through w.r.t this scenerio
+
+<details><summary>2 previous messages</summary>
+
+> I’ll base the tuning sequence on the exact current control logic: side-ToF error is measured in centimetres, `SEARCH FWD` forces equal PWM, and corner turns use a separate threshold/strength state. The important part is to calibrate sensor balance before changing PID, then tune one variable at a time at low speed.
+>
+> <details><summary>Explored 2 searches</summary>
+>
+> - Searched for `practical tuning order|23 cm|45 degrees|Kp=|scenario|zigzag|turn threshold|side target|sensor` in `MEMORY.md`
+> - Searched for `volatile float Kp|volatile float Ki|volatile float Kd|base_speed|search_speed|turn_threshold_mm|collision_threshold_mm|side_max_mm|turn_strength|float error =|pid_derivative|pid_output|pid_integral|TURN_MIN|TURN_MAX` in `maze.ino`
+>
+> </details>
+</details>
+
+The current code is a good baseline. Do not change several controls together. First record the current values, then tune in this order: sensors → Kp → Kd → turns → speed. Keep `Ki = 0` initially.
+
+**Understand The Error**
+
+The code calculates:
+
+```text
+Error = (Right ToF - Left ToF) / 10
+```
+
+So:
+
+- Right reading larger: more space on the right, steer right.
+- Left reading larger: more space on the left, steer left.
+- Equal readings: robot considers itself centered.
+
+With sensors approximately 2.5 cm from the robot center and angled 45°, the expected centered reading is approximately `127–130 mm`.
+
+**1. Verify Sensors First**
+
+Place the robot exactly in the middle of a straight track with motors stopped.
+
+Expected dashboard:
+
+```text
+Left ToF: approximately 120–140 mm
+Right ToF: approximately 120–140 mm
+Difference: ideally below 10–15 mm
+ToF Timeouts: 0
+Sensor Update Age: below 100 ms
+Control Loop: stable, approximately 35–50 Hz
+```
+
+Move the robot manually:
+
+- Move toward left wall: left reading decreases, right increases.
+- Move toward right wall: right reading decreases, left increases.
+
+If centered readings are consistently different, for example `Left=115`, `Right=145`, PID tuning cannot completely fix it because the software currently assumes equal readings mean centered. First improve sensor angles, or later add a sensor-offset calibration.
+
+**2. Tune Kp**
+
+Use a straight section and start slowly:
+
+```text
+Base Speed: 100
+Search Speed: 80
+Kp: 1.0
+Ki: 0
+Kd: 0
+```
+
+Place the robot about `10–15 mm` away from the center and run it.
+
+- Correction is too weak: increase Kp by `0.5`.
+- Robot crosses the center repeatedly: Kp is too high.
+- Robot smoothly returns toward center: Kp is close.
+
+Example progression:
+
+```text
+1.0 → 1.5 → 2.0 → 2.5
+```
+
+Stop increasing when it begins oscillating, then reduce by one step.
+
+**3. Add Kd**
+
+Kd reduces zigzagging but also amplifies noisy ToF readings.
+
+Start with:
+
+```text
+Kd: 0.1
+```
+
+Then test:
+
+```text
+0.1 → 0.2 → 0.3 → 0.4
+```
+
+- Still zigzagging: increase Kd.
+- Motors suddenly jump when readings change: decrease Kd.
+- Robot reacts slowly and feels reluctant to correct: Kd may be too high.
+
+The current `Kd=0.8` is fairly aggressive. Try lower values while learning the response.
+
+**4. Leave Ki At Zero**
+
+Keep `Ki=0` unless the robot has a small, consistent drift after sensor alignment and Kp/Kd tuning.
+
+Then try only:
+
+```text
+Ki: 0.01 → 0.02 → 0.03
+```
+
+Excessive Ki can cause delayed swinging and wall contact after long straight sections.
+
+**5. Tune Turns Separately**
+
+Start with:
+
+```text
+Base Speed: 100
+Turn Threshold: 260 mm
+Turn Strength: 90
+Collision Threshold: 140 mm
+```
+
+Approach one corner and watch `Robot Status`.
+
+Expected sequence:
+
+```text
+RUN → TURN LEFT/RIGHT → RUN
+```
+
+Adjust based on behaviour:
+
+| Behaviour | Adjustment |
+|---|---|
+| Turn starts too late | Turn Threshold `260 → 280` |
+| Turn starts too early | Turn Threshold `260 → 240` |
+| Starts turning but goes wide | Turn Strength `90 → 105` |
+| Rotates too sharply or overshoots | Turn Strength `90 → 75` |
+| Shows `FRONT STOP` at a valid corner | Check side readings; open side is not being identified |
+| Wrong turn direction | Check whether left/right sensors or labels are swapped |
+
+PWM mismatch during `TURN LEFT/RIGHT` is intentional. PWM must match only during `SEARCH FWD`.
+
+**6. Increase Speed Last**
+
+After stable operation at `100`:
+
+```text
+100 → 130 → 150 → 170 → 180
+```
+
+At every speed, complete several corners before increasing again. Higher speed commonly requires:
+
+- Slightly higher turn threshold.
+- Slightly higher turn strength.
+- Slightly more Kd.
+- Lower search speed than base speed.
+
+A reasonable first complete-run target is:
+
+```text
+Kp: 1.5–3.0
+Ki: 0
+Kd: 0.1–0.4
+Base Speed: 130
+Search Speed: 90
+Turn Threshold: 260–300 mm
+Turn Strength: 90–110
+Collision Threshold: 140 mm
+Side Max: 450 mm
+```
+
+For the next test, record the centered left/right readings and describe whether the first failure is straight-line zigzagging, late turning, early turning, wrong-direction turning, or incomplete turning. That determines the next single adjustment.
+
+> the distance from the center of the line connecting the motors to the center tof in the front is 10.5 cm, and thoes of each sides are about 8.5 cm,m both wheels are seperated at a distance of 10cm , currently the bot has turning issues like , as soon as it detcts a left turn , the right wheel turns very speed and the left one is very very slow , causing it to bump in to the left wall , we need smooth turning , like dont satart. turning immeditly when the side sensors see large values gradually change while still goinf front enough to clear its body lenghth fromthe way and go smoothly.
+
+<details><summary>10 previous messages</summary>
+
+> The geometry explains the collision: the side sensors see the opening roughly `8.5 cm` before the motor axle reaches it, while the current code instantly applies a large `±90 PWM` turn. I’ll replace that step-turn with three phases: detect the opening, continue straight for a tunable clearance period, then ramp into a gentler forward arc while keeping the inner wheel moving.
+>
+> <details><summary>Explored a file, a search</summary>
+>
+> - Searched for `ESP32 maze|turn_strength|TURN LEFT|23 cm|45 degrees|tuning order` in `MEMORY.md`
+> - Read `./outputs/maze/maze.ino`
+>
+> </details>
+>
+> I’m making the clearance and ramp durations dashboard-tunable because distance cannot be derived accurately from PWM without encoders or measured wheel speed. Defaults will be conservative: `350 ms` straight approach, `450 ms` steering ramp, and `50 PWM` maximum curve strength, with the inner wheel guaranteed to retain forward motion.
+>
+> <details><summary>Edited a file</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+13 -5)
+> - Wrote `./outputs/maze/maze.ino` (+47 -31)
+> - Wrote `./outputs/maze/maze.ino` (+31 -8)
+>
+> </details>
+>
+> One adjustment to the trigger is important: the approach phase should start when exactly one side sensor sees open space, even before the front threshold is reached. That uses the measured `8.5 cm` sensor-to-axle offset directly; the robot then drives straight during the clearance phase before beginning the arc.
+>
+> <details><summary>Edited a file, explored a file, a search, ran a command</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+3 -1)
+>
+> <details><summary>Explored a file, a search</summary>
+>
+> - Read `./outputs/maze/maze.ino`
+> - Searched for `active_turn|TURN_MIN_DURATION|TURN_MAX_DURATION|turn_power|turn_curve|turn_approach|turn_ramp|TURN_APPROACH|TURN_CURVE|turn_candidate|one_side_open|turn_adjustment|TURN_MAX_DIFFERENTIAL` in `maze.ino`
+>
+> </details>
+>
+> - Ran `node -e 'const fs=require("fs"); const s=fs.readFileSync("outputs/maze/maze.ino","utf8"); const m=s.match(/R"rawliteral\(([\s\S]*?)\)rawliteral"/); if(!m) throw Error("dashboard missing"); for(const x of m[1].matchAll(/<script>([\s\S]*?)<\/script>/g))new Function(x[1]); console.log("dashboard JavaScript syntax OK");'`
+>
+> </details>
+>
+> I’m adding two safeguards before finalizing: an `80 ms` confirmation so one noisy side reading cannot trigger a turn, and a short post-turn cooldown so the same opening cannot trigger a second turn immediately after the first arc completes.
+>
+> <details><summary>Edited a file, explored a file, a search, ran 2 commands</summary>
+>
+> - Wrote `./outputs/maze/maze.ino` (+21 -4)
+>
+> - Wrote `./outputs/maze/maze.ino` (+2 -0)
+>
+> <details><summary>Explored a file</summary>
+>
+> - Read `./outputs/maze/maze.ino`
+>
+> </details>
+>
+> - Ran `command -v arduino-cli || true`
+>
+> <details><summary>Explored a search</summary>
+>
+> - Searched for `active_turn|turn_power|DEFAULT_TURN_STRENGTH|TURN_DETECT|TURN_COOLDOWN|TURN_APPROACH|TURN_CURVE|APPROACH LEFT|CURVE LEFT|turn_approach|turn_ramp|turn_curve|TURN_MAX_DIFFERENTIAL` in `maze.ino`
+>
+> </details>
+>
+> - Ran `node -e 'const fs=require("fs"); const s=fs.readFileSync("outputs/maze/maze.ino","utf8"); const m=s.match(/R"rawliteral\(([\s\S]*?)\)rawliteral"/); if(!m) throw Error("dashboard missing"); for(const x of m[1].matchAll(/<script>([\s\S]*?)<\/script>/g))new Function(x[1]); console.log("dashboard JavaScript syntax OK");'`
+>
+> </details>
+>
+> The old saved `Turn Strength = 90` will not carry into this controller; it uses a new preference key and starts at `50`. This matters because otherwise flash persistence would silently restore the aggressive pivot behavior after upload. I’m synchronizing the sketch copies and doing the final static checks now.
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran `cp outputs/maze/maze.ino outputs/maze_solver_robot_fixed.ino
+> cp outputs/maze/maze.ino work/maze_solver_robot_fixed.ino
+> cmp outputs/maze/maze.ino outputs/maze_solver_robot_fixed.ino
+> cmp outputs/maze/maze.ino work/maze_solver_robot_fixed.ino
+> node -e 'const fs=require("fs"); const s=fs.readFileSync("outputs/maze/maze.ino","utf8"); const h=s.match(/R"rawliteral\(([\s\S]*?)\)rawliteral"/)[1]; for(const x of h.matchAll(/<script>([\s\S]*?)<\/script>/g))new Function(x[1]); console.log("dashboard JavaScript syntax OK");'
+> rg -n "turn_power|active_turn|TURN_MIN_DURATION|TURN_MAX_DURATION" outputs/maze/maze.ino || true
+> rg -n "APPROACH LEFT|CURVE LEFT|DEFAULT_TURN_STRENGTH|DEFAULT_TURN_APPROACH|DEFAULT_TURN_RAMP|TURN_MAX_DIFFERENTIAL|turn_curve|turn_appr|turn_ramp" outputs/maze/maze.ino
+> wc -l outputs/maze/maze.ino
+> command -v arduino-cli || true`
+>
+> </details>
+</details>
+
+Implemented smooth geometry-aware turning in [maze.ino](./outputs/maze/maze.ino).
+
+New sequence:
+
+```text
+Opening detected
+→ confirm for 80 ms
+→ APPROACH LEFT/RIGHT with equal PWM
+→ CURVE LEFT/RIGHT with gradual PWM difference
+→ return to RUN
+```
+
+Defaults:
+
+```text
+Straight Before Turn: 350 ms
+Turn Ramp Time:       450 ms
+Turn Strength:        50 PWM
+```
+
+The old `90 PWM` turn value is deliberately ignored. During the curve, the differential is limited so the inner wheel always retains at least 45% forward drive. It can no longer immediately slow almost to zero.
+
+**Calibrating The 8.5 cm Offset**
+
+At `Search Speed = 125`, measure how long the robot takes to travel exactly `8.5 cm` in a straight line.
+
+Set:
+
+```text
+Straight Before Turn ≈ measured time - 80 ms
+```
+
+Example: if travelling 8.5 cm takes `430 ms`:
+
+```text
+Straight Before Turn = 350 ms
+```
+
+The extra `80 ms` is already used for opening confirmation.
+
+**Adjustment Scenarios**
+
+- Still hits the inside wall: increase Approach by `50 ms`.
+- Reaches too close to the front wall: decrease Approach by `50 ms`.
+- Inner wheel remains too slow: reduce Strength `50 → 45 → 40`.
+- Turn is too wide: increase Strength by `5`.
+- Steering change is still abrupt: increase Ramp `450 → 550 ms`.
+- Robot does not rotate enough: decrease Ramp or increase Strength.
+- Repeats the same turn: the new `500 ms` cooldown should prevent this.
+
+Test initially with:
+
+```text
+Base Speed:       100–120
+Search Speed:     90–100
+Turn Strength:    50
+Approach:         350 ms
+Ramp:             450 ms
+Turn Threshold:   260 mm
+Collision:        140 mm
+```
+
+Because there are no wheel encoders, the 8.5 cm clearance is time-based and will vary slightly with battery condition, floor grip, and motor speed. Encoders would be required for exact distance-based clearance.
+
+All sketch copies are synchronized and dashboard JavaScript validation passed. Arduino compilation remains unavailable locally.
