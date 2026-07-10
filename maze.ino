@@ -76,7 +76,7 @@ const char* password = "123tinkerspace";
 
 // ESP32 PWM setup for DRV8833 motor inputs
 #define MOTOR_PWM_FREQ 20000
-#define MOTOR_PWM_RESOLUTION 10
+#define MOTOR_PWM_RESOLUTION 8
 #define LEFT_FWD_CH 0
 #define LEFT_REV_CH 1
 #define RIGHT_FWD_CH 2
@@ -93,6 +93,7 @@ volatile float search_speed = DEFAULT_SEARCH_SPEED;
 volatile float turn_threshold_mm = DEFAULT_TOF_TURN_THRESHOLD_MM;
 volatile float collision_threshold_mm = DEFAULT_TOF_COLLISION_THRESHOLD_MM;
 volatile float side_max_mm = DEFAULT_TOF_SIDE_MAX_MM;
+volatile float straight_trim = 0.0;
 
 // Control state
 float pid_integral = 0.0;
@@ -352,7 +353,8 @@ void core0_control_loop(void* param) {
     
     float pid_output = Kp * error + Ki * pid_integral + Kd * pid_derivative;
     
-    float steering = constrain(pid_output, -100, 100);
+    float trim = straight_trim;
+    float steering = constrain(pid_output + trim, -100, 100);
     
     float current_base_speed = base_speed;
     float current_search_speed = search_speed;
@@ -461,6 +463,10 @@ void onWebSocketEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
           side_max_mm = constrain(parsed_value, 100.0, 2000.0);
           updated = true;
         }
+        if (extract_json_float(message, "trim", parsed_value)) {
+          straight_trim = constrain(parsed_value, -80.0, 80.0);
+          updated = true;
+        }
 
         if (updated) {
           // Save to flash
@@ -472,9 +478,10 @@ void onWebSocketEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
           prefs.putFloat("turn", turn_threshold_mm);
           prefs.putFloat("collide", collision_threshold_mm);
           prefs.putFloat("side_max", side_max_mm);
+          prefs.putFloat("trim", straight_trim);
           
-          Serial.printf("[TUNE] Kp=%.2f Ki=%.2f Kd=%.2f Speed=%.0f Search=%.0f Turn=%.0f Collision=%.0f SideMax=%.0f\n",
-                        Kp, Ki, Kd, base_speed, search_speed, turn_threshold_mm, collision_threshold_mm, side_max_mm);
+          Serial.printf("[TUNE] Kp=%.2f Ki=%.2f Kd=%.2f Speed=%.0f Search=%.0f Turn=%.0f Collision=%.0f SideMax=%.0f Trim=%.0f\n",
+                        Kp, Ki, Kd, base_speed, search_speed, turn_threshold_mm, collision_threshold_mm, side_max_mm, straight_trim);
         }
       }
     }
@@ -652,6 +659,12 @@ String get_html_dashboard() {
         </div>
 
         <div class="control-group">
+          <label>Straight Trim (-80 to +80)</label>
+          <input type="range" id="trim" min="-80" max="80" step="1" value="0">
+          <span class="value-display" id="trim-val">0</span>
+        </div>
+
+        <div class="control-group">
           <label>Search Speed (0-255)</label>
           <input type="range" id="search" min="0" max="255" step="5" value="125">
           <span class="value-display" id="search-val">125</span>
@@ -756,7 +769,7 @@ String get_html_dashboard() {
         if (data.pid_out !== undefined) document.getElementById('pid-out').textContent = data.pid_out.toFixed(1);
         if (data.left_pwm !== undefined) document.getElementById('left-pwm').textContent = data.left_pwm.toFixed(0);
         if (data.right_pwm !== undefined) document.getElementById('right-pwm').textContent = data.right_pwm.toFixed(0);
-        ['kp', 'ki', 'kd', 'speed', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
+        ['kp', 'ki', 'kd', 'speed', 'trim', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
           if (data[id] !== undefined) {
             const slider = document.getElementById(id);
             const display = document.getElementById(id + '-val');
@@ -776,7 +789,7 @@ String get_html_dashboard() {
       } catch (e) {}
     };
     
-    ['kp', 'ki', 'kd', 'speed', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
+    ['kp', 'ki', 'kd', 'speed', 'trim', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
       const slider = document.getElementById(id);
       const display = document.getElementById(id + '-val');
       
@@ -860,6 +873,7 @@ void core1_web_server(void* param) {
                   ",\"ki\":" + String(Ki, 2) +
                   ",\"kd\":" + String(Kd, 2) +
                   ",\"speed\":" + String((int)base_speed) +
+                  ",\"trim\":" + String((int)straight_trim) +
                   ",\"search\":" + String((int)search_speed) +
                   ",\"turn\":" + String((int)turn_threshold_mm) +
                   ",\"collision\":" + String((int)collision_threshold_mm) +
@@ -893,6 +907,7 @@ void core1_web_server(void* param) {
                     ",\"ki\":" + String(Ki, 2) +
                     ",\"kd\":" + String(Kd, 2) +
                     ",\"speed\":" + String((int)base_speed) +
+                    ",\"trim\":" + String((int)straight_trim) +
                     ",\"search\":" + String((int)search_speed) +
                     ",\"turn\":" + String((int)turn_threshold_mm) +
                     ",\"collision\":" + String((int)collision_threshold_mm) +
@@ -936,9 +951,10 @@ void setup() {
   turn_threshold_mm = prefs.getFloat("turn", DEFAULT_TOF_TURN_THRESHOLD_MM);
   collision_threshold_mm = prefs.getFloat("collide", DEFAULT_TOF_COLLISION_THRESHOLD_MM);
   side_max_mm = prefs.getFloat("side_max", DEFAULT_TOF_SIDE_MAX_MM);
+  straight_trim = prefs.getFloat("trim", 0.0);
   
   Serial.println("\n[Flash] Loaded tuning values:");
-  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f\n", Kp, Ki, Kd, base_speed, search_speed);
+  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f  Trim=%.0f\n", Kp, Ki, Kd, base_speed, search_speed, straight_trim);
   Serial.printf("  Turn=%.0f mm  Collision=%.0f mm  OutLimit=%.0f mm\n", turn_threshold_mm, collision_threshold_mm, side_max_mm);
   
   // Initialize hardware
