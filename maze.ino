@@ -74,6 +74,13 @@ const char* ap_password = "maze1234";
 #define EXPECTED_CENTER_SIDE_READING_MM 130
 #define TOF_INVALID_READING_MM 8190
 #define DEFAULT_SEARCH_SPEED 125
+#define DEFAULT_TURN_STRENGTH 90
+#define TOF_TIMEOUT_MS 40
+#define TOF_TIMING_BUDGET_US 20000
+#define TOF_CONTINUOUS_PERIOD_MS 25
+#define TURN_MIN_DURATION_MS 250
+#define TURN_MAX_DURATION_MS 1200
+#define TURN_CLEAR_MARGIN_MM 80
 
 // ESP32 PWM setup for DRV8833 motor inputs
 #define MOTOR_PWM_FREQ 20000
@@ -94,10 +101,13 @@ volatile float search_speed = DEFAULT_SEARCH_SPEED;
 volatile float turn_threshold_mm = DEFAULT_TOF_TURN_THRESHOLD_MM;
 volatile float collision_threshold_mm = DEFAULT_TOF_COLLISION_THRESHOLD_MM;
 volatile float side_max_mm = DEFAULT_TOF_SIDE_MAX_MM;
+volatile float turn_strength = DEFAULT_TURN_STRENGTH;
 
 // Control state
 float pid_integral = 0.0;
 float pid_prev_error = 0.0;
+int8_t active_turn_direction = 0;
+uint32_t active_turn_started_ms = 0;
 
 // Sensor readings (updated by Core 0)
 volatile int16_t tof_left_mm = 200;
@@ -117,6 +127,8 @@ volatile float telemetry_left_pwm = 0;
 volatile float telemetry_right_pwm = 0;
 volatile const char* telemetry_status = "BOOT";
 volatile uint32_t loop_count = 0;
+volatile uint32_t tof_timeout_count = 0;
+volatile uint32_t last_sensor_update_ms = 0;
 
 // ToF sensor objects
 VL53L0X tof_left, tof_center, tof_right;
@@ -189,7 +201,9 @@ void init_tof_sensors() {
   } else {
     tof_left_ok = true;
     tof_left.setAddress(TOF_LEFT_ADDR);
-    tof_left.startContinuous();
+    tof_left.setTimeout(TOF_TIMEOUT_MS);
+    tof_left.setMeasurementTimingBudget(TOF_TIMING_BUDGET_US);
+    tof_left.startContinuous(TOF_CONTINUOUS_PERIOD_MS);
     Serial.println("OK (0x50)");
   }
   
@@ -202,7 +216,9 @@ void init_tof_sensors() {
   } else {
     tof_center_ok = true;
     tof_center.setAddress(TOF_CENTER_ADDR);
-    tof_center.startContinuous();
+    tof_center.setTimeout(TOF_TIMEOUT_MS);
+    tof_center.setMeasurementTimingBudget(TOF_TIMING_BUDGET_US);
+    tof_center.startContinuous(TOF_CONTINUOUS_PERIOD_MS);
     Serial.println("OK (0x51)");
   }
   
@@ -215,7 +231,9 @@ void init_tof_sensors() {
   } else {
     tof_right_ok = true;
     tof_right.setAddress(TOF_RIGHT_ADDR);
-    tof_right.startContinuous();
+    tof_right.setTimeout(TOF_TIMEOUT_MS);
+    tof_right.setMeasurementTimingBudget(TOF_TIMING_BUDGET_US);
+    tof_right.startContinuous(TOF_CONTINUOUS_PERIOD_MS);
     Serial.println("OK (0x52)");
   }
 }
@@ -246,6 +264,10 @@ void read_tof_sensors() {
   int16_t right = tof_right_ok ? tof_right.readRangeContinuousMillimeters() : -1;
   bool right_timeout = tof_right_ok && tof_right.timeoutOccurred();
 
+  if (left_timeout) tof_timeout_count++;
+  if (center_timeout) tof_timeout_count++;
+  if (right_timeout) tof_timeout_count++;
+
   bool left_fault = !tof_left_ok || left_timeout || left <= 0;
   bool center_fault = !tof_center_ok || center_timeout || center <= 0;
   bool right_fault = !tof_right_ok || right_timeout || right <= 0;
@@ -268,6 +290,7 @@ void read_tof_sensors() {
   tof_left_mm = left_fault ? -1 : left;
   tof_center_mm = center_fault ? -1 : center;
   tof_right_mm = right_fault ? -1 : right;
+  last_sensor_update_ms = millis();
 }
 
 // ============= MOTOR CONTROL =============
@@ -315,21 +338,36 @@ void core0_control_loop(void* param) {
     float turn_threshold = turn_threshold_mm;
     float collision_threshold = collision_threshold_mm;
     int side_max = (int)side_max_mm;
-    bool search_mode = !tof_left_valid || !tof_right_valid;
-    
-    if (!search_mode && tof_center_valid && tof_center_mm < turn_threshold) {
+    bool front_turn_zone = tof_center_valid && tof_center_mm < turn_threshold;
+
+    if (active_turn_direction != 0) {
+      uint32_t turn_elapsed = millis() - active_turn_started_ms;
+      bool front_clear = !tof_center_valid || tof_center_mm > turn_threshold + TURN_CLEAR_MARGIN_MM;
+      if ((turn_elapsed >= TURN_MIN_DURATION_MS && front_clear) || turn_elapsed >= TURN_MAX_DURATION_MS) {
+        active_turn_direction = 0;
+      }
+    }
+
+    if (active_turn_direction == 0 && front_turn_zone) {
       int left_compare = tof_left_valid ? tof_left_mm : side_max;
       int right_compare = tof_right_valid ? tof_right_mm : side_max;
       if (right_compare > left_compare + 20) {
-        turn_signal = 1;
-        speed_reduction = 0.6;
+        active_turn_direction = 1;
+        active_turn_started_ms = millis();
       } else if (left_compare > right_compare + 20) {
-        turn_signal = -1;
-        speed_reduction = 0.6;
+        active_turn_direction = -1;
+        active_turn_started_ms = millis();
       }
     }
+
+    if (active_turn_direction != 0) {
+      turn_signal = active_turn_direction;
+      speed_reduction = 0.65;
+    }
+
+    bool search_mode = (!tof_left_valid || !tof_right_valid) && turn_signal == 0 && !front_turn_zone;
     
-    if (tof_center_valid && tof_center_mm < collision_threshold) {
+    if (tof_center_valid && tof_center_mm < collision_threshold && turn_signal == 0) {
       set_motor_speed(0, 0);
       telemetry_error = 0;
       telemetry_pid_output = 0;
@@ -343,9 +381,11 @@ void core0_control_loop(void* param) {
     
     // ===== CENTERING PID (left/right ToF error) =====
     // Positive error means the right side is more open, so steer right.
-    float error = (tof_left_valid && tof_right_valid) ? (tof_right_mm - tof_left_mm) / 10.0 : 0.0;
+    float error = (!search_mode && turn_signal == 0 && tof_left_valid && tof_right_valid)
+                    ? (tof_right_mm - tof_left_mm) / 10.0
+                    : 0.0;
 
-    if (search_mode) {
+    if (search_mode || turn_signal != 0) {
       pid_integral = 0.0;
       pid_prev_error = 0.0;
     }
@@ -369,8 +409,9 @@ void core0_control_loop(void* param) {
     float left_base = active_speed * speed_reduction;
     float right_base = active_speed * speed_reduction;
     
-    float left_motor = left_base + steering + (turn_signal * 50);
-    float right_motor = right_base - steering - (turn_signal * 50);
+    float turn_adjustment = turn_signal * turn_strength;
+    float left_motor = left_base + steering + turn_adjustment;
+    float right_motor = right_base - steering - turn_adjustment;
     
     left_motor = constrain(left_motor, 0, 255);
     right_motor = constrain(right_motor, 0, 255);
@@ -382,7 +423,9 @@ void core0_control_loop(void* param) {
     telemetry_pid_output = pid_output;
     telemetry_left_pwm = left_motor;
     telemetry_right_pwm = right_motor;
-    telemetry_status = search_mode ? "SEARCH FWD" : "RUN";
+    if (turn_signal > 0) telemetry_status = "TURN RIGHT";
+    else if (turn_signal < 0) telemetry_status = "TURN LEFT";
+    else telemetry_status = search_mode ? "SEARCH FWD" : "RUN";
     loop_count++;
     
     vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONTROL_LOOP_MS));
@@ -393,7 +436,7 @@ void core0_control_loop(void* param) {
 
 String build_telemetry_json() {
   String json;
-  json.reserve(520);
+  json.reserve(700);
   json = "{\"error\":" + String(telemetry_error, 2) +
          ",\"pid_out\":" + String(telemetry_pid_output, 1) +
          ",\"left_pwm\":" + String((int)telemetry_left_pwm) +
@@ -403,6 +446,7 @@ String build_telemetry_json() {
          ",\"kd\":" + String(Kd, 2) +
          ",\"speed\":" + String((int)base_speed) +
          ",\"search\":" + String((int)search_speed) +
+         ",\"turn_strength\":" + String((int)turn_strength) +
          ",\"turn\":" + String((int)turn_threshold_mm) +
          ",\"collision\":" + String((int)collision_threshold_mm) +
          ",\"side_max\":" + String((int)side_max_mm) +
@@ -417,7 +461,11 @@ String build_telemetry_json() {
          ",\"tof_center_fault\":" + String(tof_center_fault ? "true" : "false") +
          ",\"tof_right_fault\":" + String(tof_right_fault ? "true" : "false") +
          ",\"status\":\"" + String((const char*)telemetry_status) + "\"" +
-         ",\"loop_count\":" + String(loop_count) + "}";
+         ",\"loop_count\":" + String(loop_count) +
+         ",\"uptime_s\":" + String(millis() / 1000UL) +
+         ",\"sensor_age_ms\":" + String(millis() - last_sensor_update_ms) +
+         ",\"tof_timeouts\":" + String(tof_timeout_count) +
+         ",\"wifi_clients\":" + String(WiFi.softAPgetStationNum()) + "}";
   return json;
 }
 
@@ -437,6 +485,9 @@ bool update_tuning_value(const String& key, float value) {
   } else if (key == "search") {
     search_speed = constrain(value, 0.0f, 255.0f);
     prefs.putFloat("search", search_speed);
+  } else if (key == "turn_strength") {
+    turn_strength = constrain(value, 30.0f, 140.0f);
+    prefs.putFloat("turn_power", turn_strength);
   } else if (key == "turn") {
     turn_threshold_mm = constrain(value, 30.0f, 600.0f);
     prefs.putFloat("turn", turn_threshold_mm);
@@ -627,6 +678,12 @@ String get_html_dashboard() {
         </div>
 
         <div class="control-group">
+          <label>Turn Strength (PWM)</label>
+          <input type="range" id="turn_strength" min="30" max="140" step="5" value="90">
+          <span class="value-display" id="turn_strength-val">90</span>
+        </div>
+
+        <div class="control-group">
           <label>Turn Threshold (mm)</label>
           <input type="range" id="turn" min="30" max="600" step="5" value="260">
           <span class="value-display" id="turn-val">260</span>
@@ -687,6 +744,26 @@ String get_html_dashboard() {
             <span>Right PWM</span>
             <strong id="right-pwm">0</strong>
           </div>
+          <div class="telemetry-item">
+            <span>Control Loop</span>
+            <strong id="control-hz">-- Hz</strong>
+          </div>
+          <div class="telemetry-item">
+            <span>ESP Uptime</span>
+            <strong id="uptime">0 s</strong>
+          </div>
+          <div class="telemetry-item">
+            <span>WiFi Clients</span>
+            <strong id="wifi-clients">0</strong>
+          </div>
+          <div class="telemetry-item">
+            <span>Sensor Update Age</span>
+            <strong id="sensor-age">-- ms</strong>
+          </div>
+          <div class="telemetry-item">
+            <span>ToF Timeouts</span>
+            <strong id="tof-timeouts">0</strong>
+          </div>
         </div>
         
       </div>
@@ -697,6 +774,8 @@ String get_html_dashboard() {
     const status = document.getElementById('status');
     const tuneTimers = {};
     let telemetryRequestActive = false;
+    let previousLoopCount = null;
+    let previousLoopTime = null;
 
     function applyTelemetry(data) {
       try {
@@ -714,7 +793,20 @@ String get_html_dashboard() {
         if (data.pid_out !== undefined) document.getElementById('pid-out').textContent = data.pid_out.toFixed(1);
         if (data.left_pwm !== undefined) document.getElementById('left-pwm').textContent = data.left_pwm.toFixed(0);
         if (data.right_pwm !== undefined) document.getElementById('right-pwm').textContent = data.right_pwm.toFixed(0);
-        ['kp', 'ki', 'kd', 'speed', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
+        if (data.uptime_s !== undefined) document.getElementById('uptime').textContent = data.uptime_s + ' s';
+        if (data.wifi_clients !== undefined) document.getElementById('wifi-clients').textContent = data.wifi_clients;
+        if (data.sensor_age_ms !== undefined) document.getElementById('sensor-age').textContent = data.sensor_age_ms + ' ms';
+        if (data.tof_timeouts !== undefined) document.getElementById('tof-timeouts').textContent = data.tof_timeouts;
+        if (data.loop_count !== undefined) {
+          const now = Date.now();
+          if (previousLoopCount !== null && data.loop_count >= previousLoopCount) {
+            const hz = (data.loop_count - previousLoopCount) * 1000 / (now - previousLoopTime);
+            document.getElementById('control-hz').textContent = hz.toFixed(1) + ' Hz';
+          }
+          previousLoopCount = data.loop_count;
+          previousLoopTime = now;
+        }
+        ['kp', 'ki', 'kd', 'speed', 'search', 'turn_strength', 'turn', 'collision', 'side_max'].forEach(id => {
           if (data[id] !== undefined) {
             const slider = document.getElementById(id);
             const display = document.getElementById(id + '-val');
@@ -749,7 +841,7 @@ String get_html_dashboard() {
     pollTelemetry();
     setInterval(pollTelemetry, 500);
     
-    ['kp', 'ki', 'kd', 'speed', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
+    ['kp', 'ki', 'kd', 'speed', 'search', 'turn_strength', 'turn', 'collision', 'side_max'].forEach(id => {
       const slider = document.getElementById(id);
       const display = document.getElementById(id + '-val');
       
@@ -780,7 +872,7 @@ void core1_web_server(void* param) {
   IPAddress ap_ip(192, 168, 4, 1);
   IPAddress ap_subnet(255, 255, 255, 0);
   WiFi.softAPConfig(ap_ip, ap_ip, ap_subnet);
-  bool ap_started = WiFi.softAP(ap_ssid, ap_password, 6, false, 2);
+  bool ap_started = WiFi.softAP(ap_ssid, ap_password, 6, false, 4);
   Serial.printf("  Network: %s\n", ap_ssid);
   Serial.printf("  Password: %s\n", ap_password);
   Serial.print("  Dashboard: http://");
@@ -846,12 +938,13 @@ void setup() {
   Kd = prefs.getFloat("kd", 0.8);
   base_speed = prefs.getFloat("speed", 180);
   search_speed = prefs.getFloat("search", DEFAULT_SEARCH_SPEED);
+  turn_strength = prefs.getFloat("turn_power", DEFAULT_TURN_STRENGTH);
   turn_threshold_mm = prefs.getFloat("turn", DEFAULT_TOF_TURN_THRESHOLD_MM);
   collision_threshold_mm = prefs.getFloat("collide", DEFAULT_TOF_COLLISION_THRESHOLD_MM);
   side_max_mm = prefs.getFloat("side_max", DEFAULT_TOF_SIDE_MAX_MM);
   
   Serial.println("\n[Flash] Loaded tuning values:");
-  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f\n", Kp, Ki, Kd, base_speed, search_speed);
+  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f  TurnStrength=%.0f\n", Kp, Ki, Kd, base_speed, search_speed, turn_strength);
   Serial.printf("  Turn=%.0f mm  Collision=%.0f mm  OutLimit=%.0f mm\n", turn_threshold_mm, collision_threshold_mm, side_max_mm);
   
   // Initialize hardware
