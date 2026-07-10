@@ -2,7 +2,7 @@
   MAZE SOLVER ROBOT - COMPLETE DUAL-CORE SYSTEM
   
   Hardware:
-  - 3x ToF sensors (front: -25°, 0°, +25°)
+  - 3x ToF sensors (front: -45°, 0°, +45°)
   - 2x N20 gear motors via DRV8833
   - ESP32 dev module (dual-core)
   
@@ -22,7 +22,7 @@
   
   Architecture:
   - Core 0: 50 Hz PID control loop + motor drive
-  - Core 1: WiFi, WebSocket server, live telemetry
+  - Core 1: direct WiFi access point, HTTP dashboard and telemetry
   - Persistent storage: PID values in flash via Preferences
 */
 
@@ -37,8 +37,8 @@
 
 // ============= CONFIGURATION =============
 
-const char* ssid = "Tinker Space";
-const char* password = "123tinkerspace";
+const char* ap_ssid = "MazeRobot";
+const char* ap_password = "maze1234";
 
 // ===== PIN DEFINITIONS (FROM USER) =====
 #define LEFT_MOTOR_FWD 27
@@ -73,6 +73,7 @@ const char* password = "123tinkerspace";
 #define EXPECTED_CENTER_SIDE_READING_MM 130
 #define TOF_INVALID_READING_MM 8190
 #define DEFAULT_SEARCH_SPEED 125
+#define DEFAULT_LEFT_MOTOR_BOOST 8
 
 // ESP32 PWM setup for DRV8833 motor inputs
 #define MOTOR_PWM_FREQ 20000
@@ -93,7 +94,7 @@ volatile float search_speed = DEFAULT_SEARCH_SPEED;
 volatile float turn_threshold_mm = DEFAULT_TOF_TURN_THRESHOLD_MM;
 volatile float collision_threshold_mm = DEFAULT_TOF_COLLISION_THRESHOLD_MM;
 volatile float side_max_mm = DEFAULT_TOF_SIDE_MAX_MM;
-volatile float straight_trim = 0.0;
+volatile float left_motor_boost = DEFAULT_LEFT_MOTOR_BOOST;
 
 // Control state
 float pid_integral = 0.0;
@@ -124,9 +125,8 @@ bool tof_left_ok = false;
 bool tof_center_ok = false;
 bool tof_right_ok = false;
 
-// Web server and WebSocket
+// Web server
 AsyncWebServer server(80);
-AsyncWebSocket ws("/ws");
 
 // Preferences
 Preferences prefs;
@@ -181,7 +181,7 @@ void init_tof_sensors() {
   delay(10);
   
   // Bring up LEFT sensor
-  Serial.print("  LEFT (-25°)... ");
+  Serial.print("  LEFT (-45°)... ");
   digitalWrite(TOF_LEFT_XSHUT, HIGH);
   delay(10);
   if (!tof_left.init()) {
@@ -207,7 +207,7 @@ void init_tof_sensors() {
   }
   
   // Bring up RIGHT sensor
-  Serial.print("  RIGHT (+25°)... ");
+  Serial.print("  RIGHT (+45°)... ");
   digitalWrite(TOF_RIGHT_XSHUT, HIGH);
   delay(10);
   if (!tof_right.init()) {
@@ -353,8 +353,7 @@ void core0_control_loop(void* param) {
     
     float pid_output = Kp * error + Ki * pid_integral + Kd * pid_derivative;
     
-    float trim = straight_trim;
-    float steering = constrain(pid_output + trim, -100, 100);
+    float steering = constrain(pid_output, -100, 100);
     
     float current_base_speed = base_speed;
     float current_search_speed = search_speed;
@@ -365,7 +364,7 @@ void core0_control_loop(void* param) {
     float left_base = active_speed * speed_reduction;
     float right_base = active_speed * speed_reduction;
     
-    float left_motor = left_base + steering + (turn_signal * 50);
+    float left_motor = left_base + steering + (turn_signal * 50) + left_motor_boost;
     float right_motor = right_base - steering - (turn_signal * 50);
     
     left_motor = constrain(left_motor, 0, 255);
@@ -387,105 +386,71 @@ void core0_control_loop(void* param) {
 
 // ============= WiFi & WEB SERVER (Core 1) =============
 
-bool extract_json_float(const String& message, const char* key, float& value) {
-  String pattern = "\"" + String(key) + "\"";
-  int key_pos = message.indexOf(pattern);
-  if (key_pos < 0) return false;
-
-  int colon_pos = message.indexOf(':', key_pos + pattern.length());
-  if (colon_pos < 0) return false;
-
-  int start = colon_pos + 1;
-  while (start < (int)message.length() && isspace((unsigned char)message[start])) {
-    start++;
-  }
-
-  int end = start;
-  while (end < (int)message.length()) {
-    char c = message[end];
-    if (!(isDigit(c) || c == '-' || c == '+' || c == '.')) break;
-    end++;
-  }
-
-  if (end == start) return false;
-  value = message.substring(start, end).toFloat();
-  return true;
+String build_telemetry_json() {
+  String json;
+  json.reserve(520);
+  json = "{\"error\":" + String(telemetry_error, 2) +
+         ",\"pid_out\":" + String(telemetry_pid_output, 1) +
+         ",\"left_pwm\":" + String((int)telemetry_left_pwm) +
+         ",\"right_pwm\":" + String((int)telemetry_right_pwm) +
+         ",\"kp\":" + String(Kp, 2) +
+         ",\"ki\":" + String(Ki, 2) +
+         ",\"kd\":" + String(Kd, 2) +
+         ",\"speed\":" + String((int)base_speed) +
+         ",\"left_boost\":" + String((int)left_motor_boost) +
+         ",\"search\":" + String((int)search_speed) +
+         ",\"turn\":" + String((int)turn_threshold_mm) +
+         ",\"collision\":" + String((int)collision_threshold_mm) +
+         ",\"side_max\":" + String((int)side_max_mm) +
+         ",\"tof_left\":" + String((int)tof_left_mm) +
+         ",\"tof_center\":" + String((int)tof_center_mm) +
+         ",\"tof_right\":" + String((int)tof_right_mm) +
+         ",\"side_target\":" + String(EXPECTED_CENTER_SIDE_READING_MM) +
+         ",\"tof_left_valid\":" + String(tof_left_valid ? "true" : "false") +
+         ",\"tof_center_valid\":" + String(tof_center_valid ? "true" : "false") +
+         ",\"tof_right_valid\":" + String(tof_right_valid ? "true" : "false") +
+         ",\"tof_left_fault\":" + String(tof_left_fault ? "true" : "false") +
+         ",\"tof_center_fault\":" + String(tof_center_fault ? "true" : "false") +
+         ",\"tof_right_fault\":" + String(tof_right_fault ? "true" : "false") +
+         ",\"status\":\"" + String((const char*)telemetry_status) + "\"" +
+         ",\"loop_count\":" + String(loop_count) + "}";
+  return json;
 }
 
-void onWebSocketEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
-                      AwsEventType type, void* arg, uint8_t* data, size_t len) {
-  if (type == WS_EVT_CONNECT) {
-    Serial.println("[WebSocket] Client connected");
-  } else if (type == WS_EVT_DISCONNECT) {
-    Serial.println("[WebSocket] Client disconnected");
-  } else if (type == WS_EVT_DATA) {
-    AwsFrameInfo* info = (AwsFrameInfo*)arg;
-    if (info->final && info->index == 0 && info->len == len) {
-      if (info->opcode == WS_TEXT) {
-        String message;
-        message.reserve(len + 1);
-        for (size_t i = 0; i < len; i++) {
-          message += (char)data[i];
-        }
-        
-        // Parse small JSON messages such as {"kp":0.5} or {"speed":150}
-        float parsed_value = 0.0;
-        bool updated = false;
-        if (extract_json_float(message, "kp", parsed_value)) {
-          Kp = constrain(parsed_value, 0.0, 5.0);
-          updated = true;
-        }
-        if (extract_json_float(message, "ki", parsed_value)) {
-          Ki = constrain(parsed_value, 0.0, 1.0);
-          updated = true;
-        }
-        if (extract_json_float(message, "kd", parsed_value)) {
-          Kd = constrain(parsed_value, 0.0, 10.0);
-          updated = true;
-        }
-        if (extract_json_float(message, "speed", parsed_value)) {
-          base_speed = constrain(parsed_value, 0.0, 255.0);
-          updated = true;
-        }
-        if (extract_json_float(message, "search", parsed_value)) {
-          search_speed = constrain(parsed_value, 0.0, 255.0);
-          updated = true;
-        }
-        if (extract_json_float(message, "turn", parsed_value)) {
-          turn_threshold_mm = constrain(parsed_value, 30.0, 600.0);
-          updated = true;
-        }
-        if (extract_json_float(message, "collision", parsed_value)) {
-          collision_threshold_mm = constrain(parsed_value, 30.0, 600.0);
-          updated = true;
-        }
-        if (extract_json_float(message, "side_max", parsed_value)) {
-          side_max_mm = constrain(parsed_value, 100.0, 2000.0);
-          updated = true;
-        }
-        if (extract_json_float(message, "trim", parsed_value)) {
-          straight_trim = constrain(parsed_value, -80.0, 80.0);
-          updated = true;
-        }
-
-        if (updated) {
-          // Save to flash
-          prefs.putFloat("kp", Kp);
-          prefs.putFloat("ki", Ki);
-          prefs.putFloat("kd", Kd);
-          prefs.putFloat("speed", base_speed);
-          prefs.putFloat("search", search_speed);
-          prefs.putFloat("turn", turn_threshold_mm);
-          prefs.putFloat("collide", collision_threshold_mm);
-          prefs.putFloat("side_max", side_max_mm);
-          prefs.putFloat("trim", straight_trim);
-          
-          Serial.printf("[TUNE] Kp=%.2f Ki=%.2f Kd=%.2f Speed=%.0f Search=%.0f Turn=%.0f Collision=%.0f SideMax=%.0f Trim=%.0f\n",
-                        Kp, Ki, Kd, base_speed, search_speed, turn_threshold_mm, collision_threshold_mm, side_max_mm, straight_trim);
-        }
-      }
-    }
+bool update_tuning_value(const String& key, float value) {
+  if (key == "kp") {
+    Kp = constrain(value, 0.0f, 5.0f);
+    prefs.putFloat("kp", Kp);
+  } else if (key == "ki") {
+    Ki = constrain(value, 0.0f, 1.0f);
+    prefs.putFloat("ki", Ki);
+  } else if (key == "kd") {
+    Kd = constrain(value, 0.0f, 10.0f);
+    prefs.putFloat("kd", Kd);
+  } else if (key == "speed") {
+    base_speed = constrain(value, 0.0f, 255.0f);
+    prefs.putFloat("speed", base_speed);
+  } else if (key == "left_boost") {
+    left_motor_boost = constrain(value, -40.0f, 40.0f);
+    prefs.putFloat("left_boost", left_motor_boost);
+  } else if (key == "search") {
+    search_speed = constrain(value, 0.0f, 255.0f);
+    prefs.putFloat("search", search_speed);
+  } else if (key == "turn") {
+    turn_threshold_mm = constrain(value, 30.0f, 600.0f);
+    prefs.putFloat("turn", turn_threshold_mm);
+  } else if (key == "collision") {
+    collision_threshold_mm = constrain(value, 30.0f, 600.0f);
+    prefs.putFloat("collide", collision_threshold_mm);
+  } else if (key == "side_max") {
+    side_max_mm = constrain(value, 100.0f, 2000.0f);
+    prefs.putFloat("side_max", side_max_mm);
+  } else {
+    return false;
   }
+
+  Serial.printf("[TUNE] %s=%.2f\n", key.c_str(), value);
+  return true;
 }
 
 String get_html_dashboard() {
@@ -496,7 +461,6 @@ String get_html_dashboard() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Maze Robot PID Tuner</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -607,7 +571,12 @@ String get_html_dashboard() {
       font-family: 'Courier New', monospace;
     }
     canvas {
+      display: block;
+      width: 100%;
+      height: 220px;
       margin-top: 20px;
+      background: white;
+      border-radius: 6px;
     }
     .status {
       padding: 12px;
@@ -659,9 +628,9 @@ String get_html_dashboard() {
         </div>
 
         <div class="control-group">
-          <label>Straight Trim (-80 to +80)</label>
-          <input type="range" id="trim" min="-80" max="80" step="1" value="0">
-          <span class="value-display" id="trim-val">0</span>
+          <label>Left Motor Boost (-40 to +40)</label>
+          <input type="range" id="left_boost" min="-40" max="40" step="1" value="8">
+          <span class="value-display" id="left_boost-val">8</span>
         </div>
 
         <div class="control-group">
@@ -733,32 +702,48 @@ String get_html_dashboard() {
           </div>
         </div>
         
-        <canvas id="errorChart"></canvas>
+        <canvas id="errorChart" width="600" height="220"></canvas>
       </div>
     </div>
   </div>
 
   <script>
-    const ws = new WebSocket('ws://' + window.location.host + '/ws');
     const status = document.getElementById('status');
-    
-    ws.onopen = () => {
-      status.textContent = '✅ Connected';
-      status.className = 'status connected';
-    };
-    
-    ws.onclose = () => {
-      status.textContent = '⚠️ Disconnected';
-      status.className = 'status disconnected';
-    };
-    
-    ws.onmessage = (event) => {
+    const errorHistory = [];
+    const tuneTimers = {};
+    const errorCanvas = document.getElementById('errorChart');
+    const errorContext = errorCanvas.getContext('2d');
+
+    function drawErrorChart() {
+      const width = errorCanvas.width;
+      const height = errorCanvas.height;
+      const middle = height / 2;
+      errorContext.clearRect(0, 0, width, height);
+      errorContext.strokeStyle = '#e1e4e8';
+      errorContext.lineWidth = 1;
+      errorContext.beginPath();
+      errorContext.moveTo(0, middle);
+      errorContext.lineTo(width, middle);
+      errorContext.stroke();
+      if (errorHistory.length < 2) return;
+      errorContext.strokeStyle = '#667eea';
+      errorContext.lineWidth = 2;
+      errorContext.beginPath();
+      errorHistory.forEach((value, index) => {
+        const x = index * width / 49;
+        const y = middle - Math.max(-5, Math.min(5, value)) * (height / 12);
+        if (index === 0) errorContext.moveTo(x, y);
+        else errorContext.lineTo(x, y);
+      });
+      errorContext.stroke();
+    }
+
+    function applyTelemetry(data) {
       try {
-        const data = JSON.parse(event.data);
         const formatTof = (value, valid, fault) => {
           if (fault) return 'FAULT';
           if (!valid) return 'OUT';
-          return value.toFixed(0);
+          return Number(value).toFixed(0);
         };
         if (data.status !== undefined) document.getElementById('robot-status').textContent = data.status;
         if (data.tof_left !== undefined) document.getElementById('tof-left').textContent = formatTof(data.tof_left, data.tof_left_valid, data.tof_left_fault);
@@ -769,7 +754,7 @@ String get_html_dashboard() {
         if (data.pid_out !== undefined) document.getElementById('pid-out').textContent = data.pid_out.toFixed(1);
         if (data.left_pwm !== undefined) document.getElementById('left-pwm').textContent = data.left_pwm.toFixed(0);
         if (data.right_pwm !== undefined) document.getElementById('right-pwm').textContent = data.right_pwm.toFixed(0);
-        ['kp', 'ki', 'kd', 'speed', 'trim', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
+        ['kp', 'ki', 'kd', 'speed', 'left_boost', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
           if (data[id] !== undefined) {
             const slider = document.getElementById(id);
             const display = document.getElementById(id + '-val');
@@ -779,17 +764,31 @@ String get_html_dashboard() {
           }
         });
         
-        if (chartData.labels.length > 50) {
-          chartData.labels.shift();
-          chartData.datasets[0].data.shift();
-        }
-        chartData.labels.push((Date.now() % 10000).toString().slice(-4));
-        chartData.datasets[0].data.push(data.error || 0);
-        chart.update('none');
-      } catch (e) {}
-    };
+        errorHistory.push(Number(data.error) || 0);
+        if (errorHistory.length > 50) errorHistory.shift();
+        drawErrorChart();
+      } catch (e) {
+        console.log('Telemetry update failed', e);
+      }
+    }
+
+    async function pollTelemetry() {
+      try {
+        const response = await fetch('/telemetry?t=' + Date.now(), { cache: 'no-store' });
+        if (!response.ok) throw new Error('Telemetry request failed');
+        applyTelemetry(await response.json());
+        status.textContent = 'Connected directly';
+        status.className = 'status connected';
+      } catch (e) {
+        status.textContent = 'Robot disconnected';
+        status.className = 'status disconnected';
+      }
+    }
+
+    pollTelemetry();
+    setInterval(pollTelemetry, 200);
     
-    ['kp', 'ki', 'kd', 'speed', 'trim', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
+    ['kp', 'ki', 'kd', 'speed', 'left_boost', 'search', 'turn', 'collision', 'side_max'].forEach(id => {
       const slider = document.getElementById(id);
       const display = document.getElementById(id + '-val');
       
@@ -798,36 +797,13 @@ String get_html_dashboard() {
         const decimalPlaces = (id === 'kp' || id === 'ki' || id === 'kd') ? 2 : 0;
         display.textContent = value.toFixed(decimalPlaces);
         
-        const msg = {};
-        msg[id] = value;
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(msg));
-        }
+        clearTimeout(tuneTimers[id]);
+        tuneTimers[id] = setTimeout(async () => {
+          const url = '/tune?key=' + encodeURIComponent(id) + '&value=' + encodeURIComponent(value);
+          try { await fetch(url, { cache: 'no-store' }); }
+          catch (e) { status.textContent = 'Tune update failed'; }
+        }, 150);
       });
-    });
-    
-    const chartData = {
-      labels: [],
-      datasets: [{
-        label: 'ToF Error (cm)',
-        data: [],
-        borderColor: '#667eea',
-        backgroundColor: 'rgba(102, 126, 234, 0.1)',
-        borderWidth: 2,
-        tension: 0.3,
-        fill: true
-      }]
-    };
-    
-    const chart = new Chart(document.getElementById('errorChart'), {
-      type: 'line',
-      data: chartData,
-      options: {
-        responsive: true,
-        maintainAspectRatio: true,
-        plugins: { legend: { display: false } },
-        scales: { y: { min: -5, max: 5 }, x: { display: false } }
-      }
     });
   </script>
 </body>
@@ -836,97 +812,51 @@ String get_html_dashboard() {
 }
 
 void core1_web_server(void* param) {
-  Serial.println("\n[Core 1] Web server starting...");
+  Serial.println("\n[Core 1] Direct dashboard access point starting...");
   
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  
-  int attempts = 0;
-  Serial.print("  Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  Serial.println();
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("  Connected! IP: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("  WiFi failed (optional)");
-  }
-  
-  ws.onEvent(onWebSocketEvent);
-  server.addHandler(&ws);
+  WiFi.mode(WIFI_AP);
+  IPAddress ap_ip(192, 168, 4, 1);
+  IPAddress ap_subnet(255, 255, 255, 0);
+  WiFi.softAPConfig(ap_ip, ap_ip, ap_subnet);
+  bool ap_started = WiFi.softAP(ap_ssid, ap_password);
+  Serial.printf("  Network: %s\n", ap_ssid);
+  Serial.printf("  Password: %s\n", ap_password);
+  Serial.print("  Dashboard: http://");
+  Serial.println(WiFi.softAPIP());
+  if (!ap_started) Serial.println("  WARNING: access point failed to start");
   
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
-    request->send(200, "text/html", get_html_dashboard());
+    AsyncWebServerResponse* response = request->beginResponse(200, "text/html", get_html_dashboard());
+    response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    request->send(response);
   });
   
   server.on("/telemetry", HTTP_GET, [](AsyncWebServerRequest* request) {
-    String json = "{\"error\":" + String(telemetry_error, 2) +
-                  ",\"pid_out\":" + String(telemetry_pid_output, 1) +
-                  ",\"left_pwm\":" + String((int)telemetry_left_pwm) +
-                  ",\"right_pwm\":" + String((int)telemetry_right_pwm) +
-                  ",\"kp\":" + String(Kp, 2) +
-                  ",\"ki\":" + String(Ki, 2) +
-                  ",\"kd\":" + String(Kd, 2) +
-                  ",\"speed\":" + String((int)base_speed) +
-                  ",\"trim\":" + String((int)straight_trim) +
-                  ",\"search\":" + String((int)search_speed) +
-                  ",\"turn\":" + String((int)turn_threshold_mm) +
-                  ",\"collision\":" + String((int)collision_threshold_mm) +
-                  ",\"side_max\":" + String((int)side_max_mm) +
-                  ",\"tof_left\":" + String((int)tof_left_mm) +
-                  ",\"tof_center\":" + String((int)tof_center_mm) +
-                  ",\"tof_right\":" + String((int)tof_right_mm) +
-                  ",\"side_target\":" + String(EXPECTED_CENTER_SIDE_READING_MM) +
-                  ",\"tof_left_valid\":" + String(tof_left_valid ? "true" : "false") +
-                  ",\"tof_center_valid\":" + String(tof_center_valid ? "true" : "false") +
-                  ",\"tof_right_valid\":" + String(tof_right_valid ? "true" : "false") +
-                  ",\"tof_left_fault\":" + String(tof_left_fault ? "true" : "false") +
-                  ",\"tof_center_fault\":" + String(tof_center_fault ? "true" : "false") +
-                  ",\"tof_right_fault\":" + String(tof_right_fault ? "true" : "false") +
-                  ",\"status\":\"" + String((const char*)telemetry_status) + "\"" +
-                  ",\"loop_count\":" + String(loop_count) + "}";
-    request->send(200, "application/json", json);
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", build_telemetry_json());
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  server.on("/tune", HTTP_GET, [](AsyncWebServerRequest* request) {
+    if (!request->hasParam("key") || !request->hasParam("value")) {
+      request->send(400, "application/json", "{\"ok\":false,\"error\":\"missing key or value\"}");
+      return;
+    }
+
+    String key = request->getParam("key")->value();
+    float value = request->getParam("value")->value().toFloat();
+    if (!update_tuning_value(key, value)) {
+      request->send(400, "application/json", "{\"ok\":false,\"error\":\"unknown key\"}");
+      return;
+    }
+    request->send(200, "application/json", "{\"ok\":true}");
   });
   
   server.begin();
-  Serial.println("[Web] Server started");
-  
-  uint32_t last_broadcast = millis();
+  Serial.println("[Web] Direct dashboard server started");
+
   while (1) {
-    if (ws.count() > 0 && millis() - last_broadcast > 50) {
-      String json = "{\"error\":" + String(telemetry_error, 2) +
-                    ",\"pid_out\":" + String(telemetry_pid_output, 1) +
-                    ",\"left_pwm\":" + String((int)telemetry_left_pwm) +
-                    ",\"right_pwm\":" + String((int)telemetry_right_pwm) +
-                    ",\"kp\":" + String(Kp, 2) +
-                    ",\"ki\":" + String(Ki, 2) +
-                    ",\"kd\":" + String(Kd, 2) +
-                    ",\"speed\":" + String((int)base_speed) +
-                    ",\"trim\":" + String((int)straight_trim) +
-                    ",\"search\":" + String((int)search_speed) +
-                    ",\"turn\":" + String((int)turn_threshold_mm) +
-                    ",\"collision\":" + String((int)collision_threshold_mm) +
-                    ",\"side_max\":" + String((int)side_max_mm) +
-                    ",\"tof_left\":" + String((int)tof_left_mm) +
-                    ",\"tof_center\":" + String((int)tof_center_mm) +
-                    ",\"tof_right\":" + String((int)tof_right_mm) +
-                    ",\"side_target\":" + String(EXPECTED_CENTER_SIDE_READING_MM) +
-                    ",\"tof_left_valid\":" + String(tof_left_valid ? "true" : "false") +
-                    ",\"tof_center_valid\":" + String(tof_center_valid ? "true" : "false") +
-                    ",\"tof_right_valid\":" + String(tof_right_valid ? "true" : "false") +
-                    ",\"tof_left_fault\":" + String(tof_left_fault ? "true" : "false") +
-                    ",\"tof_center_fault\":" + String(tof_center_fault ? "true" : "false") +
-                    ",\"tof_right_fault\":" + String(tof_right_fault ? "true" : "false") +
-                    ",\"status\":\"" + String((const char*)telemetry_status) + "\"}";
-      ws.textAll(json);
-      last_broadcast = millis();
-    }
-    vTaskDelay(10);
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
 
@@ -951,10 +881,10 @@ void setup() {
   turn_threshold_mm = prefs.getFloat("turn", DEFAULT_TOF_TURN_THRESHOLD_MM);
   collision_threshold_mm = prefs.getFloat("collide", DEFAULT_TOF_COLLISION_THRESHOLD_MM);
   side_max_mm = prefs.getFloat("side_max", DEFAULT_TOF_SIDE_MAX_MM);
-  straight_trim = prefs.getFloat("trim", 0.0);
+  left_motor_boost = prefs.getFloat("left_boost", DEFAULT_LEFT_MOTOR_BOOST);
   
   Serial.println("\n[Flash] Loaded tuning values:");
-  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f  Trim=%.0f\n", Kp, Ki, Kd, base_speed, search_speed, straight_trim);
+  Serial.printf("  Kp=%.2f  Ki=%.2f  Kd=%.2f  Speed=%.0f  Search=%.0f  LeftBoost=%.0f\n", Kp, Ki, Kd, base_speed, search_speed, left_motor_boost);
   Serial.printf("  Turn=%.0f mm  Collision=%.0f mm  OutLimit=%.0f mm\n", turn_threshold_mm, collision_threshold_mm, side_max_mm);
   
   // Initialize hardware
